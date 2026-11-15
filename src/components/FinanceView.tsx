@@ -1,6 +1,6 @@
 import { Download, Plus, Trash2, X } from 'lucide-react';
 import { useMemo, useState, type FormEvent } from 'react';
-import { formatCurrency, formatDateTime } from '../lib/formatters';
+import { formatCurrency, formatDateTime, getRecordMillis, getRecordTimestamp } from '../lib/formatters';
 import { createExpense, removeExpense } from '../services/depotService';
 import {
   type CurrencyCode,
@@ -45,14 +45,14 @@ export function FinanceView({ uid, currency, sales, expenses }: FinanceViewProps
   const filteredSales = useMemo(() => {
     return sales.filter((s) => {
       if (s.deliveryStatus === 'cancelled') return false;
-      const ms = s.createdAt?.toMillis() ?? Date.now();
+      const ms = getRecordMillis(s);
       return ms >= periodThreshold;
     });
   }, [sales, periodThreshold]);
 
   const filteredExpenses = useMemo(() => {
     return expenses.filter((e) => {
-      const ms = e.createdAt?.toMillis() ?? Date.now();
+      const ms = getRecordMillis(e);
       return ms >= periodThreshold;
     });
   }, [expenses, periodThreshold]);
@@ -107,7 +107,7 @@ export function FinanceView({ uid, currency, sales, expenses }: FinanceViewProps
     const header = ['Pedido', 'Data', 'Cliente', 'Botijao', 'Qtd', 'Modalidade', 'Pagamento', 'StatusPagamento', 'StatusEntrega', 'Total'];
     const rows = filteredSales.map((s) => [
       s.orderNumber,
-      formatDateTime(s.createdAt),
+      formatDateTime(getRecordTimestamp(s)),
       `"${s.customerName.replace(/"/g, '""')}"`,
       s.cylinderCode,
       String(s.quantity),
@@ -323,7 +323,7 @@ export function FinanceView({ uid, currency, sales, expenses }: FinanceViewProps
                   {filteredExpenses.map((exp) => (
                     <tr key={exp.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
                       <td className="py-2.5 px-4 font-mono text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                        {formatDateTime(exp.createdAt)}
+                        {formatDateTime(getRecordTimestamp(exp))}
                       </td>
                       <td className="py-2.5 px-4 text-xs font-medium text-slate-700 dark:text-slate-300">
                         {EXPENSE_CATEGORY_LABELS[exp.category]}

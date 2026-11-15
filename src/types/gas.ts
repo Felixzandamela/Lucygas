@@ -91,6 +91,7 @@ export interface Sale {
   paymentStatus: PaymentStatus;
   deliveryStatus: DeliveryStatus;
   notes: string;
+  occurredAt?: Timestamp;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -104,6 +105,7 @@ export interface StockMovement {
   fullDelta: number;
   emptyDelta: number;
   note: string;
+  occurredAt?: Timestamp;
   createdAt?: Timestamp;
 }
 
@@ -113,6 +115,7 @@ export interface Expense {
   category: ExpenseCategory;
   description: string;
   amount: number;
+  occurredAt?: Timestamp;
   createdAt?: Timestamp;
 }
 

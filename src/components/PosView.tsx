@@ -56,6 +56,7 @@ export function PosView({
   const [discount, setDiscount] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [notes, setNotes] = useState<string>('');
+  const [saleDate, setSaleDate] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
@@ -188,6 +189,7 @@ export function PosView({
 
     setSubmitting(true);
     try {
+      const occurredAt = saleDate ? new Date(`${saleDate}T12:00:00`) : undefined;
       const createdSale = await createSaleTransaction({
         uid,
         cylinder: selectedCylinder,
@@ -203,12 +205,14 @@ export function PosView({
         driverName,
         paymentMethod,
         notes,
+        occurredAt,
       });
       setLastSale(createdSale);
       setReceiptSale(createdSale);
       setQuantity(1);
       setDiscount(0);
       setNotes('');
+      setSaleDate('');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Falha ao registrar venda.');
     } finally {
@@ -604,18 +608,32 @@ export function PosView({
                 </button>
               ))}
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Observações do Pedido (opcional)
-              </label>
-              <input
-                type="text"
-                maxLength={FIELD_LIMITS.NOTES}
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Ex.: Troco / Portão azul / Entregar após 14h"
-                className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Observações do Pedido (opcional)
+                </label>
+                <input
+                  type="text"
+                  maxLength={FIELD_LIMITS.NOTES}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Ex.: Troco / Portão azul / Entregar após 14h"
+                  className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Data da Venda (opcional)
+                </label>
+                <input
+                  type="date"
+                  max={new Date().toISOString().slice(0, 10)}
+                  value={saleDate}
+                  onChange={(e) => setSaleDate(e.target.value)}
+                  className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                />
+              </div>
             </div>
           </div>
         </div>

@@ -92,7 +92,7 @@ service cloud.firestore {
           'deliveryAddress', 'cylinderId', 'cylinderCode', 'saleMode', 'quantity',
           'unitPrice', 'deliveryFee', 'discount', 'totalAmount', 'unitCost',
           'fulfillmentType', 'driverName', 'paymentMethod', 'paymentStatus',
-          'deliveryStatus', 'notes', 'createdAt', 'updatedAt'
+          'deliveryStatus', 'notes', 'createdAt', 'occurredAt', 'updatedAt'
         ])
         && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
         && data.orderNumber is string && data.orderNumber.size() >= 1 && data.orderNumber.size() <= 30
@@ -116,12 +116,13 @@ service cloud.firestore {
         && data.deliveryStatus in ['pending', 'in_route', 'delivered', 'cancelled']
         && data.notes is string && data.notes.size() <= 240
         && data.createdAt is timestamp
+        && (!('occurredAt' in data) || (data.occurredAt is timestamp && data.occurredAt <= request.time))
         && data.updatedAt is timestamp;
     }
 
     function isValidStockMovement(data) {
       return data.keys().hasAll(['ownerId', 'cylinderId', 'cylinderCode', 'movementType', 'fullDelta', 'emptyDelta', 'note', 'createdAt'])
-        && data.keys().hasOnly(['ownerId', 'cylinderId', 'cylinderCode', 'movementType', 'fullDelta', 'emptyDelta', 'note', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'cylinderId', 'cylinderCode', 'movementType', 'fullDelta', 'emptyDelta', 'note', 'createdAt', 'occurredAt'])
         && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
         && data.cylinderId is string && isValidId(data.cylinderId)
         && data.cylinderCode is string && data.cylinderCode.size() >= 1 && data.cylinderCode.size() <= 20
@@ -129,17 +130,19 @@ service cloud.firestore {
         && data.fullDelta is number && data.fullDelta >= -10000 && data.fullDelta <= 10000
         && data.emptyDelta is number && data.emptyDelta >= -10000 && data.emptyDelta <= 10000
         && data.note is string && data.note.size() <= 160
-        && data.createdAt is timestamp;
+        && data.createdAt is timestamp
+        && (!('occurredAt' in data) || (data.occurredAt is timestamp && data.occurredAt <= request.time));
     }
 
     function isValidExpense(data) {
       return data.keys().hasAll(['ownerId', 'category', 'description', 'amount', 'createdAt'])
-        && data.keys().hasOnly(['ownerId', 'category', 'description', 'amount', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'category', 'description', 'amount', 'createdAt', 'occurredAt'])
         && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
         && data.category in ['restock', 'fuel', 'maintenance', 'payroll', 'other']
         && data.description is string && data.description.size() >= 1 && data.description.size() <= 120
         && data.amount is number && data.amount > 0 && data.amount <= 100000000
-        && data.createdAt is timestamp;
+        && data.createdAt is timestamp
+        && (!('occurredAt' in data) || (data.occurredAt is timestamp && data.occurredAt <= request.time));
     }
 
     match /depots/{depotId} {
@@ -235,7 +238,7 @@ service cloud.firestore {
               && incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'updatedAt'])
             )
           );
-        allow delete: if false;
+        allow delete: if isValidId(depotId) && isValidId(saleId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
       }
 
       match /stockMovements/{movementId} {
@@ -247,7 +250,8 @@ service cloud.firestore {
           && parentDepotOwned(depotId)
           && exists(/databases/$(database)/documents/depots/$(depotId)/cylinders/$(incoming().cylinderId))
           && incoming().createdAt == request.time;
-        allow update, delete: if false;
+        allow update: if false;
+        allow delete: if isValidId(depotId) && isValidId(movementId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
       }
 
       match /expenses/{expenseId} {

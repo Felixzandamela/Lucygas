@@ -16,6 +16,7 @@ import {
   type Customer,
   type Cylinder,
   type DeliveryStatus,
+  type Expense,
   type ExpenseCategory,
   FIELD_LIMITS,
   type FulfillmentType,
@@ -23,7 +24,15 @@ import {
   type PaymentMethod,
   type Sale,
   type SaleMode,
+  type StockMovement,
 } from '../types/gas';
+
+function toSafeOccurredAtTimestamp(date?: Date): Timestamp | undefined {
+  if (!date || Number.isNaN(date.getTime())) return undefined;
+  const maxAllowedMs = Date.now() - 30_000;
+  const clamped = date.getTime() > maxAllowedMs ? new Date(maxAllowedMs) : date;
+  return Timestamp.fromDate(clamped);
+}
 
 const DEFAULT_CYLINDERS = [
   {
@@ -187,6 +196,7 @@ export interface CreateSaleInput {
   driverName: string;
   paymentMethod: PaymentMethod;
   notes: string;
+  occurredAt?: Date;
 }
 
 export async function createSaleTransaction(input: CreateSaleInput): Promise<Sale> {
@@ -205,6 +215,7 @@ export async function createSaleTransaction(input: CreateSaleInput): Promise<Sal
     driverName,
     paymentMethod,
     notes,
+    occurredAt,
   } = input;
 
   const qty = Math.max(1, Math.min(500, Math.floor(quantity)));
@@ -254,9 +265,11 @@ export async function createSaleTransaction(input: CreateSaleInput): Promise<Sal
   } as const;
 
   const batch = writeBatch(db);
+  const occurredTs = toSafeOccurredAtTimestamp(occurredAt);
 
   batch.set(saleRef, {
     ...salePayload,
+    ...(occurredTs ? { occurredAt: occurredTs } : {}),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -276,6 +289,7 @@ export async function createSaleTransaction(input: CreateSaleInput): Promise<Sal
     fullDelta: -qty,
     emptyDelta,
     note: sanitizeText(`Pedido ${orderNumber} (${saleMode === 'exchange' ? 'Troca' : 'Casco novo'})`, FIELD_LIMITS.MOVEMENT_NOTE),
+    ...(occurredTs ? { occurredAt: occurredTs } : {}),
     createdAt: serverTimestamp(),
   });
 
@@ -302,6 +316,7 @@ export async function createSaleTransaction(input: CreateSaleInput): Promise<Sal
   return {
     id: saleRef.id,
     ...salePayload,
+    ...(occurredTs ? { occurredAt: occurredTs } : {}),
     createdAt: nowTs,
     updatedAt: nowTs,
   };
@@ -419,10 +434,12 @@ export async function adjustCylinderStock(
   movementType: 'restock' | 'return_empty' | 'adjustment',
   fullDelta: number,
   emptyDelta: number,
-  note: string
+  note: string,
+  occurredAt?: Date
 ): Promise<void> {
   const nextFull = Math.max(0, cylinder.fullCount + fullDelta);
   const nextEmpty = Math.max(0, cylinder.emptyCount + emptyDelta);
+  const occurredTs = toSafeOccurredAtTimestamp(occurredAt);
 
   const batch = writeBatch(db);
   const cylRef = doc(db, 'depots', uid, 'cylinders', cylinder.id);
@@ -442,6 +459,7 @@ export async function adjustCylinderStock(
     fullDelta: nextFull - cylinder.fullCount,
     emptyDelta: nextEmpty - cylinder.emptyCount,
     note: sanitizeText(note || 'Movimentação manual', FIELD_LIMITS.MOVEMENT_NOTE),
+    ...(occurredTs ? { occurredAt: occurredTs } : {}),
     createdAt: serverTimestamp(),
   });
 
@@ -634,16 +652,18 @@ export async function removeCustomer(uid: string, customerId: string): Promise<v
 
 export async function createExpense(
   uid: string,
-  payload: { category: ExpenseCategory; description: string; amount: number }
+  payload: { category: ExpenseCategory; description: string; amount: number; occurredAt?: Date }
 ): Promise<void> {
   const ref = doc(collection(db, 'depots', uid, 'expenses'));
   const amount = Math.max(0.01, clampNonNegative(payload.amount, 100000000));
+  const occurredTs = toSafeOccurredAtTimestamp(payload.occurredAt);
   await executeFirestoreWrite(
     setDoc(ref, {
       ownerId: uid,
       category: payload.category,
       description: sanitizeText(payload.description, FIELD_LIMITS.EXPENSE_DESC),
       amount,
+      ...(occurredTs ? { occurredAt: occurredTs } : {}),
       createdAt: serverTimestamp(),
     }),
     OperationType.CREATE,
@@ -657,6 +677,15 @@ export async function removeExpense(uid: string, expenseId: string): Promise<voi
     deleteDoc(ref),
     OperationType.DELETE,
     `depots/${uid}/expenses/${expenseId}`
+  );
+}
+
+export async function deleteSaleRecord(uid: string, saleId: string): Promise<void> {
+  const ref = doc(db, 'depots', uid, 'sales', saleId);
+  await executeFirestoreWrite(
+    deleteDoc(ref),
+    OperationType.DELETE,
+    `depots/${uid}/sales/${saleId}`
   );
 }
 
@@ -681,4 +710,624 @@ export async function updateDepotSettings(
     OperationType.UPDATE,
     `depots/${uid}`
   );
+}
+
+export type HistoricalEventKind = 'sale' | 'restock' | 'acquisition';
+
+export interface HistoricalInitialStockInput {
+  code: string;
+  fullCount: number;
+  emptyCount: number;
+}
+
+export interface SavedHistoricalRowRecord {
+  saleId?: string;
+  movementId: string;
+  cylinderId: string;
+  fullDelta: number;
+  emptyDelta: number;
+}
+
+export interface HistoricalLedgerEventInput {
+  id: string;
+  dateStr: string; // YYYY-MM-DD
+  kind: HistoricalEventKind;
+  cylinderCode: string;
+  quantity: number;
+  discount: number;
+  note?: string;
+  savedRecord?: SavedHistoricalRowRecord;
+  dirtySinceSave?: boolean;
+}
+
+async function ensureCylindersExistForCodes(
+  uid: string,
+  existingCylinders: Cylinder[],
+  codes: string[]
+): Promise<Map<string, Cylinder>> {
+  const cylinderByCode = new Map<string, Cylinder>();
+  for (const c of existingCylinders) {
+    cylinderByCode.set(c.code.trim().toUpperCase(), c);
+  }
+
+  const missingCodes = codes.filter((code) => code && !cylinderByCode.has(code));
+  if (missingCodes.length > 0) {
+    const createBatch = writeBatch(db);
+    for (const code of missingCodes) {
+      const weightMatch = code.match(/(\d+)/);
+      const weightKg = weightMatch ? Math.max(1, Number(weightMatch[1])) : 11;
+      const slug = code.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      const cylId = slug || `cyl_${Date.now()}`;
+      const cylRef = doc(db, 'depots', uid, 'cylinders', cylId);
+      const created: Cylinder = {
+        id: cylId,
+        ownerId: uid,
+        code: sanitizeText(code, FIELD_LIMITS.CYLINDER_CODE),
+        name: sanitizeText(`Botijão ${code} (${weightKg} kg)`, FIELD_LIMITS.CYLINDER_NAME),
+        weightKg,
+        fullCount: 0,
+        emptyCount: 0,
+        salePrice: 1000,
+        shellPrice: 2000,
+        costPrice: 750,
+        minStock: 3,
+      };
+      createBatch.set(cylRef, {
+        ownerId: uid,
+        code: created.code,
+        name: created.name,
+        weightKg: created.weightKg,
+        fullCount: 0,
+        emptyCount: 0,
+        salePrice: created.salePrice,
+        shellPrice: created.shellPrice,
+        costPrice: created.costPrice,
+        minStock: created.minStock,
+        updatedAt: serverTimestamp(),
+      });
+      cylinderByCode.set(code, created);
+    }
+    await executeFirestoreWrite(
+      createBatch.commit(),
+      OperationType.CREATE,
+      `depots/${uid}/cylinders`
+    );
+  }
+
+  return cylinderByCode;
+}
+
+export async function saveInitialStockToFirestore(input: {
+  uid: string;
+  existingCylinders: Cylinder[];
+  initialDateStr: string;
+  initialStocks: HistoricalInitialStockInput[];
+}): Promise<void> {
+  const { uid, existingCylinders, initialDateStr, initialStocks } = input;
+  const allCodes = Array.from(
+    new Set(initialStocks.map((s) => s.code.trim().toUpperCase()))
+  ).filter(Boolean);
+
+  const cylinderByCode = await ensureCylindersExistForCodes(uid, existingCylinders, allCodes);
+  const initBaseDate = new Date(`${initialDateStr}T08:00:00`);
+  const initTs = toSafeOccurredAtTimestamp(initBaseDate) ?? Timestamp.now();
+
+  const batch = writeBatch(db);
+  for (const init of initialStocks) {
+    const code = init.code.trim().toUpperCase();
+    const cyl = cylinderByCode.get(code);
+    if (!cyl) continue;
+    const fullCount = Math.max(0, Math.floor(init.fullCount));
+    const emptyCount = Math.max(0, Math.floor(init.emptyCount));
+    batch.update(doc(db, 'depots', uid, 'cylinders', cyl.id), {
+      fullCount,
+      emptyCount,
+      updatedAt: serverTimestamp(),
+    });
+    const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
+    batch.set(movRef, {
+      ownerId: uid,
+      cylinderId: cyl.id,
+      cylinderCode: cyl.code,
+      movementType: 'adjustment' as MovementType,
+      fullDelta: fullCount,
+      emptyDelta: emptyCount,
+      note: sanitizeText(`Stock inicial (${initialDateStr})`, FIELD_LIMITS.MOVEMENT_NOTE),
+      occurredAt: initTs,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  await executeFirestoreWrite(
+    batch.commit(),
+    OperationType.WRITE,
+    `depots/${uid}/cylinders`
+  );
+}
+
+export async function saveSingleHistoricalEvent(input: {
+  uid: string;
+  existingCylinders: Cylinder[];
+  event: HistoricalLedgerEventInput;
+  seqIndex: number;
+}): Promise<SavedHistoricalRowRecord> {
+  const { uid, existingCylinders, event, seqIndex } = input;
+  const code = event.cylinderCode.trim().toUpperCase();
+  const cylinderByCode = await ensureCylindersExistForCodes(uid, existingCylinders, [code]);
+  const cyl = cylinderByCode.get(code);
+  if (!cyl) {
+    throw new Error(`Botijão ${code} não encontrado.`);
+  }
+
+  const baseTime = new Date(`${event.dateStr}T09:00:00`);
+  const eventTime = new Date(baseTime.getTime() + seqIndex * 15 * 60 * 1000);
+  const occurredTs = toSafeOccurredAtTimestamp(eventTime) ?? Timestamp.now();
+  const qty = Math.max(1, Math.floor(event.quantity));
+
+  const batch = writeBatch(db);
+
+  // Reverse previous saved record if user edited and re-saved the same row
+  let baseFull = cyl.fullCount;
+  let baseEmpty = cyl.emptyCount;
+  const prev = event.savedRecord;
+  if (prev) {
+    if (prev.saleId) {
+      batch.delete(doc(db, 'depots', uid, 'sales', prev.saleId));
+    }
+    if (prev.movementId) {
+      batch.delete(doc(db, 'depots', uid, 'stockMovements', prev.movementId));
+    }
+    if (prev.cylinderId === cyl.id) {
+      baseFull = Math.max(0, baseFull - prev.fullDelta);
+      baseEmpty = Math.max(0, baseEmpty - prev.emptyDelta);
+    } else {
+      const prevCyl = existingCylinders.find((c) => c.id === prev.cylinderId);
+      if (prevCyl) {
+        batch.update(doc(db, 'depots', uid, 'cylinders', prevCyl.id), {
+          fullCount: Math.max(0, prevCyl.fullCount - prev.fullDelta),
+          emptyCount: Math.max(0, prevCyl.emptyCount - prev.emptyDelta),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+  }
+
+  let nextFull = baseFull;
+  let nextEmpty = baseEmpty;
+  let saleId: string | undefined;
+  const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
+
+  if (event.kind === 'sale') {
+    nextFull = Math.max(0, baseFull - qty);
+    nextEmpty = baseEmpty + qty;
+
+    const unitPrice = cyl.salePrice;
+    const safeDiscount = clampNonNegative(event.discount, unitPrice * qty);
+    const totalAmount = clampNonNegative(unitPrice * qty - safeDiscount);
+    const [, mm = '11', dd = '01'] = event.dateStr.split('-');
+    const orderNumber = `HIST-${dd}${mm}-${String(seqIndex + 1).padStart(2, '0')}`;
+
+    const saleRef = doc(collection(db, 'depots', uid, 'sales'));
+    saleId = saleRef.id;
+
+    batch.set(saleRef, {
+      ownerId: uid,
+      orderNumber,
+      customerId: '',
+      customerName: 'Cliente Balcão',
+      customerPhone: '',
+      deliveryAddress: 'Retirada no Balcão',
+      cylinderId: cyl.id,
+      cylinderCode: cyl.code,
+      saleMode: 'exchange' as SaleMode,
+      quantity: qty,
+      unitPrice,
+      deliveryFee: 0,
+      discount: safeDiscount,
+      totalAmount,
+      unitCost: cyl.costPrice,
+      fulfillmentType: 'pickup' as FulfillmentType,
+      driverName: '',
+      paymentMethod: 'cash' as PaymentMethod,
+      paymentStatus: 'paid',
+      deliveryStatus: 'delivered',
+      notes: sanitizeText(event.note || 'Histórico salvo', FIELD_LIMITS.NOTES),
+      occurredAt: occurredTs,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    batch.set(movRef, {
+      ownerId: uid,
+      cylinderId: cyl.id,
+      cylinderCode: cyl.code,
+      movementType: 'sale' as MovementType,
+      fullDelta: nextFull - baseFull,
+      emptyDelta: nextEmpty - baseEmpty,
+      note: sanitizeText(`Pedido ${orderNumber} (Troca)`, FIELD_LIMITS.MOVEMENT_NOTE),
+      occurredAt: occurredTs,
+      createdAt: serverTimestamp(),
+    });
+  } else if (event.kind === 'restock') {
+    const emptiesUsed = Math.min(baseEmpty, qty);
+    nextFull = baseFull + qty;
+    nextEmpty = baseEmpty - emptiesUsed;
+
+    batch.set(movRef, {
+      ownerId: uid,
+      cylinderId: cyl.id,
+      cylinderCode: cyl.code,
+      movementType: 'restock' as MovementType,
+      fullDelta: nextFull - baseFull,
+      emptyDelta: nextEmpty - baseEmpty,
+      note: sanitizeText(event.note || `Reposição ${cyl.code} (${qty} un)`, FIELD_LIMITS.MOVEMENT_NOTE),
+      occurredAt: occurredTs,
+      createdAt: serverTimestamp(),
+    });
+  } else {
+    nextFull = baseFull + qty;
+
+    batch.set(movRef, {
+      ownerId: uid,
+      cylinderId: cyl.id,
+      cylinderCode: cyl.code,
+      movementType: 'restock' as MovementType,
+      fullDelta: nextFull - baseFull,
+      emptyDelta: 0,
+      note: sanitizeText(event.note || `Aquisição de ${qty} ${cyl.code} completo`, FIELD_LIMITS.MOVEMENT_NOTE),
+      occurredAt: occurredTs,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  batch.update(doc(db, 'depots', uid, 'cylinders', cyl.id), {
+    fullCount: nextFull,
+    emptyCount: nextEmpty,
+    updatedAt: serverTimestamp(),
+  });
+
+  await executeFirestoreWrite(
+    batch.commit(),
+    OperationType.WRITE,
+    `depots/${uid}/cylinders/${cyl.id}`
+  );
+
+  return {
+    saleId,
+    movementId: movRef.id,
+    cylinderId: cyl.id,
+    fullDelta: nextFull - baseFull,
+    emptyDelta: nextEmpty - baseEmpty,
+  };
+}
+
+export async function deleteSingleHistoricalEvent(input: {
+  uid: string;
+  existingCylinders: Cylinder[];
+  savedRecord: SavedHistoricalRowRecord;
+}): Promise<void> {
+  const { uid, existingCylinders, savedRecord } = input;
+  const batch = writeBatch(db);
+  if (savedRecord.saleId) {
+    batch.delete(doc(db, 'depots', uid, 'sales', savedRecord.saleId));
+  }
+  if (savedRecord.movementId) {
+    batch.delete(doc(db, 'depots', uid, 'stockMovements', savedRecord.movementId));
+  }
+  const cyl = existingCylinders.find((c) => c.id === savedRecord.cylinderId);
+  if (cyl) {
+    batch.update(doc(db, 'depots', uid, 'cylinders', cyl.id), {
+      fullCount: Math.max(0, cyl.fullCount - savedRecord.fullDelta),
+      emptyCount: Math.max(0, cyl.emptyCount - savedRecord.emptyDelta),
+      updatedAt: serverTimestamp(),
+    });
+  }
+  await executeFirestoreWrite(
+    batch.commit(),
+    OperationType.DELETE,
+    `depots/${uid}/stockMovements/${savedRecord.movementId}`
+  );
+}
+
+export async function discardRecordsBatch(
+  uid: string,
+  salesToDelete: Sale[],
+  movementsToDelete: StockMovement[],
+  expensesToDelete: Expense[]
+): Promise<void> {
+  const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+
+  for (const s of salesToDelete) {
+    ops.push((b) => b.delete(doc(db, 'depots', uid, 'sales', s.id)));
+  }
+  for (const m of movementsToDelete) {
+    ops.push((b) => b.delete(doc(db, 'depots', uid, 'stockMovements', m.id)));
+  }
+  for (const e of expensesToDelete) {
+    ops.push((b) => b.delete(doc(db, 'depots', uid, 'expenses', e.id)));
+  }
+
+  const CHUNK_SIZE = 400;
+  for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
+    const batch = writeBatch(db);
+    for (const op of ops.slice(i, i + CHUNK_SIZE)) {
+      op(batch);
+    }
+    await executeFirestoreWrite(
+      batch.commit(),
+      OperationType.DELETE,
+      `depots/${uid}/sales`
+    );
+  }
+}
+
+export async function applyHistoricalLedgerRebuild(input: {
+  uid: string;
+  existingCylinders: Cylinder[];
+  salesToDelete: Sale[];
+  movementsToDelete: StockMovement[];
+  expensesToDelete?: Expense[];
+  initialDateStr: string;
+  initialStocks: HistoricalInitialStockInput[];
+  events: HistoricalLedgerEventInput[];
+}): Promise<{ finalStockByCode: Record<string, { full: number; empty: number }> }> {
+  const {
+    uid,
+    existingCylinders,
+    salesToDelete,
+    movementsToDelete,
+    expensesToDelete = [],
+    initialDateStr,
+    initialStocks,
+    events,
+  } = input;
+
+  // 1. Ensure all referenced cylinder codes exist in Firestore BEFORE writing sales/movements
+  const cylinderByCode = new Map<string, Cylinder>();
+  for (const c of existingCylinders) {
+    cylinderByCode.set(c.code.trim().toUpperCase(), c);
+  }
+
+  const allCodes = Array.from(
+    new Set([
+      ...initialStocks.map((s) => s.code.trim().toUpperCase()),
+      ...events.map((e) => e.cylinderCode.trim().toUpperCase()),
+    ])
+  ).filter(Boolean);
+
+  const missingCodes = allCodes.filter((code) => !cylinderByCode.has(code));
+  if (missingCodes.length > 0) {
+    const createBatch = writeBatch(db);
+    for (const code of missingCodes) {
+      const weightMatch = code.match(/(\d+)/);
+      const weightKg = weightMatch ? Math.max(1, Number(weightMatch[1])) : 11;
+      const slug = code.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      const cylId = slug || `cyl_${Date.now()}`;
+      const cylRef = doc(db, 'depots', uid, 'cylinders', cylId);
+      const created: Cylinder = {
+        id: cylId,
+        ownerId: uid,
+        code: sanitizeText(code, FIELD_LIMITS.CYLINDER_CODE),
+        name: sanitizeText(`Botijão ${code} (${weightKg} kg)`, FIELD_LIMITS.CYLINDER_NAME),
+        weightKg,
+        fullCount: 0,
+        emptyCount: 0,
+        salePrice: 1000,
+        shellPrice: 2000,
+        costPrice: 750,
+        minStock: 3,
+      };
+      createBatch.set(cylRef, {
+        ownerId: uid,
+        code: created.code,
+        name: created.name,
+        weightKg: created.weightKg,
+        fullCount: 0,
+        emptyCount: 0,
+        salePrice: created.salePrice,
+        shellPrice: created.shellPrice,
+        costPrice: created.costPrice,
+        minStock: created.minStock,
+        updatedAt: serverTimestamp(),
+      });
+      cylinderByCode.set(code, created);
+    }
+    await executeFirestoreWrite(
+      createBatch.commit(),
+      OperationType.CREATE,
+      `depots/${uid}/cylinders`
+    );
+  }
+
+  // 2. Simulate running inventory balances
+  const stockState: Record<string, { full: number; empty: number }> = {};
+  for (const init of initialStocks) {
+    const code = init.code.trim().toUpperCase();
+    stockState[code] = {
+      full: Math.max(0, Math.floor(init.fullCount)),
+      empty: Math.max(0, Math.floor(init.emptyCount)),
+    };
+  }
+  for (const code of allCodes) {
+    if (!stockState[code]) {
+      stockState[code] = { full: 0, empty: 0 };
+    }
+  }
+
+  const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+
+  // Delete discarded records first
+  for (const s of salesToDelete) {
+    ops.push((b) => b.delete(doc(db, 'depots', uid, 'sales', s.id)));
+  }
+  for (const m of movementsToDelete) {
+    ops.push((b) => b.delete(doc(db, 'depots', uid, 'stockMovements', m.id)));
+  }
+  for (const e of expensesToDelete) {
+    ops.push((b) => b.delete(doc(db, 'depots', uid, 'expenses', e.id)));
+  }
+
+  // Record initial stock adjustment movements on initialDateStr
+  const initBaseDate = new Date(`${initialDateStr}T08:00:00`);
+  for (const init of initialStocks) {
+    const code = init.code.trim().toUpperCase();
+    const cyl = cylinderByCode.get(code);
+    if (!cyl) continue;
+    const initTs = toSafeOccurredAtTimestamp(initBaseDate) ?? Timestamp.now();
+    const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
+    ops.push((b) =>
+      b.set(movRef, {
+        ownerId: uid,
+        cylinderId: cyl.id,
+        cylinderCode: cyl.code,
+        movementType: 'adjustment' as MovementType,
+        fullDelta: Math.max(0, Math.floor(init.fullCount)),
+        emptyDelta: Math.max(0, Math.floor(init.emptyCount)),
+        note: sanitizeText(`Stock inicial (${initialDateStr})`, FIELD_LIMITS.MOVEMENT_NOTE),
+        occurredAt: initTs,
+        createdAt: serverTimestamp(),
+      })
+    );
+  }
+
+  // Group sequence within each day so timestamps maintain exact intra-day order
+  const daySequenceCount: Record<string, number> = {};
+
+  for (let idx = 0; idx < events.length; idx++) {
+    const ev = events[idx];
+    const code = ev.cylinderCode.trim().toUpperCase();
+    const cyl = cylinderByCode.get(code);
+    if (!cyl) continue;
+
+    const seq = daySequenceCount[ev.dateStr] ?? 0;
+    daySequenceCount[ev.dateStr] = seq + 1;
+    const baseTime = new Date(`${ev.dateStr}T09:00:00`);
+    const eventTime = new Date(baseTime.getTime() + seq * 15 * 60 * 1000);
+    const occurredTs = toSafeOccurredAtTimestamp(eventTime) ?? Timestamp.now();
+    const qty = Math.max(1, Math.floor(ev.quantity));
+
+    const current = stockState[code];
+
+    if (ev.kind === 'sale') {
+      current.full = Math.max(0, current.full - qty);
+      current.empty = current.empty + qty;
+
+      const unitPrice = cyl.salePrice;
+      const safeDiscount = clampNonNegative(ev.discount, unitPrice * qty);
+      const totalAmount = clampNonNegative(unitPrice * qty - safeDiscount);
+      const [, mm, dd] = ev.dateStr.split('-');
+      const orderNumber = `HIST-${dd}${mm}-${String(idx + 1).padStart(2, '0')}`;
+
+      const saleRef = doc(collection(db, 'depots', uid, 'sales'));
+      ops.push((b) =>
+        b.set(saleRef, {
+          ownerId: uid,
+          orderNumber,
+          customerId: '',
+          customerName: 'Cliente Balcão',
+          customerPhone: '',
+          deliveryAddress: 'Retirada no Balcão',
+          cylinderId: cyl.id,
+          cylinderCode: cyl.code,
+          saleMode: 'exchange' as SaleMode,
+          quantity: qty,
+          unitPrice,
+          deliveryFee: 0,
+          discount: safeDiscount,
+          totalAmount,
+          unitCost: cyl.costPrice,
+          fulfillmentType: 'pickup' as FulfillmentType,
+          driverName: '',
+          paymentMethod: 'cash' as PaymentMethod,
+          paymentStatus: 'paid',
+          deliveryStatus: 'delivered',
+          notes: sanitizeText(ev.note || 'Histórico reconstruído', FIELD_LIMITS.NOTES),
+          occurredAt: occurredTs,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+      );
+
+      const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
+      ops.push((b) =>
+        b.set(movRef, {
+          ownerId: uid,
+          cylinderId: cyl.id,
+          cylinderCode: cyl.code,
+          movementType: 'sale' as MovementType,
+          fullDelta: -qty,
+          emptyDelta: qty,
+          note: sanitizeText(`Pedido ${orderNumber} (Troca)`, FIELD_LIMITS.MOVEMENT_NOTE),
+          occurredAt: occurredTs,
+          createdAt: serverTimestamp(),
+        })
+      );
+    } else if (ev.kind === 'restock') {
+      const emptiesUsed = Math.min(current.empty, qty);
+      current.full = current.full + qty;
+      current.empty = current.empty - emptiesUsed;
+
+      const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
+      ops.push((b) =>
+        b.set(movRef, {
+          ownerId: uid,
+          cylinderId: cyl.id,
+          cylinderCode: cyl.code,
+          movementType: 'restock' as MovementType,
+          fullDelta: qty,
+          emptyDelta: -emptiesUsed,
+          note: sanitizeText(ev.note || `Reposição ${cyl.code} (${qty} un)`, FIELD_LIMITS.MOVEMENT_NOTE),
+          occurredAt: occurredTs,
+          createdAt: serverTimestamp(),
+        })
+      );
+    } else if (ev.kind === 'acquisition') {
+      current.full = current.full + qty;
+
+      const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
+      ops.push((b) =>
+        b.set(movRef, {
+          ownerId: uid,
+          cylinderId: cyl.id,
+          cylinderCode: cyl.code,
+          movementType: 'restock' as MovementType,
+          fullDelta: qty,
+          emptyDelta: 0,
+          note: sanitizeText(ev.note || `Aquisição de ${qty} ${cyl.code} completo`, FIELD_LIMITS.MOVEMENT_NOTE),
+          occurredAt: occurredTs,
+          createdAt: serverTimestamp(),
+        })
+      );
+    }
+  }
+
+  // Update final cylinder fullCount & emptyCount
+  for (const [code, finalCounts] of Object.entries(stockState)) {
+    const cyl = cylinderByCode.get(code);
+    if (!cyl) continue;
+    const cylRef = doc(db, 'depots', uid, 'cylinders', cyl.id);
+    ops.push((b) =>
+      b.update(cylRef, {
+        fullCount: finalCounts.full,
+        emptyCount: finalCounts.empty,
+        updatedAt: serverTimestamp(),
+      })
+    );
+  }
+
+  // Commit in chunks of 400 operations (Firestore batch limit is 500)
+  const CHUNK_SIZE = 400;
+  for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
+    const batch = writeBatch(db);
+    for (const op of ops.slice(i, i + CHUNK_SIZE)) {
+      op(batch);
+    }
+    await executeFirestoreWrite(
+      batch.commit(),
+      OperationType.WRITE,
+      `depots/${uid}/cylinders`
+    );
+  }
+
+  return { finalStockByCode: stockState };
 }

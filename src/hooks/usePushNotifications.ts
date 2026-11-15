@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getRecordMillis } from '../lib/formatters';
 import type { Cylinder, Sale } from '../types/gas';
 
 export type PushPermissionState = NotificationPermission | 'unsupported';
@@ -188,7 +189,7 @@ export function usePushNotifications({
             sale.deliveryAddress || 'Endereço não informado'
           }`,
           targetSection: 'sales',
-          createdAt: sale.createdAt?.toMillis() ?? now,
+          createdAt: getRecordMillis(sale),
           read: false,
         });
       }

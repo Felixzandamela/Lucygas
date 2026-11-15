@@ -50,7 +50,11 @@ function WorkspaceShell() {
     cylinders,
     sales,
   });
-  const [activeSection, setActiveSection] = useState<AppSection>('dashboard');
+  const [activeSection, setActiveSection] = useState<AppSection>(() => {
+    if (typeof window === 'undefined') return 'dashboard';
+    const saved = window.sessionStorage.getItem('lucygas_active_section') as AppSection | null;
+    return saved && NAV_ITEMS.some((item) => item.id === saved) ? saved : 'dashboard';
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [preselectedCustomerId, setPreselectedCustomerId] = useState<string | null>(null);
 
@@ -112,6 +116,9 @@ function WorkspaceShell() {
 
   const handleSelectNav = (id: AppSection) => {
     setActiveSection(id);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem('lucygas_active_section', id);
+    }
     setMobileMenuOpen(false);
   };
 
@@ -382,6 +389,9 @@ function WorkspaceShell() {
                   uid={user.uid}
                   depot={depot}
                   cylinders={cylinders}
+                  sales={sales}
+                  movements={movements}
+                  expenses={expenses}
                   pushControls={{
                     permission: push.permission,
                     prefs: push.prefs,

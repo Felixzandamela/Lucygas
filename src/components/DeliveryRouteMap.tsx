@@ -1,7 +1,7 @@
 import { Check, Eye, MapPin, Navigation, Route, Truck } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
-import { formatCurrency } from '../lib/formatters';
+import { formatCurrency, getRecordMillis } from '../lib/formatters';
 import { dispatchSalesRouteBatch } from '../services/depotService';
 import { type CurrencyCode, type Customer, type DeliveryStatus, type Sale } from '../types/gas';
 import { DeliveryStatusLabel } from './StatusLabel';
@@ -177,7 +177,7 @@ export function DeliveryRouteMap({
           streetSortKey(b.deliveryAddress)
         );
         if (streetCmp !== 0) return streetCmp;
-        return (a.createdAt?.toMillis() ?? 0) - (b.createdAt?.toMillis() ?? 0);
+        return getRecordMillis(a) - getRecordMillis(b);
       });
 
       const angle = (idx / Math.max(1, total)) * Math.PI * 2 - Math.PI / 2;

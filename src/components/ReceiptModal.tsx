@@ -1,5 +1,5 @@
 import { Printer, X } from 'lucide-react';
-import { formatCurrency, formatDateTime } from '../lib/formatters';
+import { formatCurrency, formatDateTime, getRecordTimestamp } from '../lib/formatters';
 import { type CurrencyCode, PAYMENT_METHOD_LABELS, type Sale } from '../types/gas';
 
 interface ReceiptModalProps {
@@ -38,7 +38,7 @@ export function ReceiptModal({ sale, depotName, currency, onClose }: ReceiptModa
               <p className="font-display text-lg font-bold tracking-tight">{depotName}</p>
               <p className="text-xs text-slate-500 mt-0.5">Comprovante de Venda de GLP</p>
               <p className="font-mono text-xs font-semibold text-slate-800 mt-2">
-                {sale.orderNumber} · {formatDateTime(sale.createdAt)}
+                {sale.orderNumber} · {formatDateTime(getRecordTimestamp(sale))}
               </p>
             </div>
 

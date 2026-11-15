@@ -1,11 +1,11 @@
 # Security Specification — ChamaGest Firestore Rules
 
 ## 1. Data Invariants
-1. **Depot Isolation**: Every subcollection document under `/depots/{depotId}` must belong to the authenticated, email-verified user (`depotId == request.auth.uid` and `ownerId == request.auth.uid`), backed by a parent `get()` gate on single-document operations.
+1. **Depot Isolation**: Every subcollection document under `/depots/{depotId}` must belong to the authenticated, email-verified user (`depotId == request.auth.uid` and `ownerId == request.auth.uid`), backed by a parent `get()` gate on single-document operations (including `delete` on owned records).
 2. **Identity Integrity**: `ownerId` must always equal `request.auth.uid` on creation and is strictly immutable on updates.
 3. **Referential Integrity**: A `Sale` or `StockMovement` cannot be created unless the referenced `Cylinder` document exists in `/depots/{depotId}/cylinders/{cylinderId}`.
 4. **Terminal State Locking**: Once a `Sale` reaches `deliveryStatus == 'cancelled'`, no further updates are permitted. Once `deliveryStatus == 'delivered'`, `deliveryStatus` is locked and only `paymentStatus` may transition from `'pending'` to `'paid'`.
-5. **Temporal Integrity**: `createdAt` and `updatedAt` must equal `request.time` on creation; `createdAt` is immutable on update and `updatedAt` must equal `request.time`.
+5. **Temporal Integrity**: `createdAt` and `updatedAt` must equal `request.time` on creation; `createdAt` is immutable on update and `updatedAt` must equal `request.time`. Optional `occurredAt` (when supplied for historical ledger reconstruction) must be a valid `timestamp <= request.time`.
 6. **Boundary & Schema Enforcement**: All documents enforce exact key sets (`hasAll` + `hasOnly`), string `.size()` limits, numeric range constraints, and regex-validated IDs.
 
 ## 2. The "Dirty Dozen" Adversarial Payloads

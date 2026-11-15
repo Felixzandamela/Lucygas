@@ -1,7 +1,7 @@
 import { ArrowRight, Plus, Truck, Package } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import cylinderStudioImg from '../assets/images/gas_cylinder_studio_1794631289411.jpg';
-import { formatCurrency, formatDateTime } from '../lib/formatters';
+import { formatCurrency, formatDateTime, getRecordDate, getRecordMillis, getRecordTimestamp } from '../lib/formatters';
 import { updateSaleDelivery } from '../services/depotService';
 import {
   type AppSection,
@@ -38,8 +38,8 @@ export function DashboardView({
 
     const activeSales = sales.filter((s) => s.deliveryStatus !== 'cancelled');
     const todaySales = activeSales.filter((s) => {
-      const ts = s.createdAt?.toMillis();
-      return ts ? ts >= startOfToday : true;
+      const ts = getRecordMillis(s);
+      return ts >= startOfToday;
     });
 
     const todayRevenue = todaySales.reduce((acc, s) => acc + s.totalAmount, 0);
@@ -76,7 +76,7 @@ export function DashboardView({
 
     for (const sale of sales) {
       if (sale.deliveryStatus === 'cancelled') continue;
-      const date = sale.createdAt ? sale.createdAt.toDate() : new Date();
+      const date = getRecordDate(sale);
       const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
       const bucket = days.find((d) => d.key === key);
       if (bucket) {
@@ -348,7 +348,7 @@ export function DashboardView({
                         {sale.orderNumber}
                       </div>
                       <div className="text-xs text-slate-500 dark:text-slate-400">
-                        {formatDateTime(sale.createdAt)}
+                        {formatDateTime(getRecordTimestamp(sale))}
                       </div>
                     </td>
                     <td className="py-3 px-4">

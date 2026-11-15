@@ -1,6 +1,6 @@
 import { BarChart3, Plus, TrendingDown, TrendingUp } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { formatCurrency } from '../lib/formatters';
+import { formatCurrency, getRecordDate } from '../lib/formatters';
 import type { CurrencyCode, Expense, Sale } from '../types/gas';
 
 interface MonthlyProfitChartProps {
@@ -84,7 +84,7 @@ export function MonthlyProfitChart({
 
     for (const sale of sales) {
       if (sale.deliveryStatus === 'cancelled') continue;
-      const d = sale.createdAt ? sale.createdAt.toDate() : new Date();
+      const d = getRecordDate(sale);
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
       const bucket = bucketMap.get(key);
       if (!bucket) continue;
@@ -95,7 +95,7 @@ export function MonthlyProfitChart({
     }
 
     for (const exp of expenses) {
-      const d = exp.createdAt ? exp.createdAt.toDate() : new Date();
+      const d = getRecordDate(exp);
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
       const bucket = bucketMap.get(key);
       if (!bucket) continue;

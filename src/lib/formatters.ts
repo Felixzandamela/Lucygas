@@ -24,6 +24,27 @@ export function formatDateTime(ts?: Timestamp | null): string {
   });
 }
 
+export function getRecordTimestamp(record: {
+  occurredAt?: Timestamp | null;
+  createdAt?: Timestamp | null;
+}): Timestamp | null | undefined {
+  return record.occurredAt ?? record.createdAt;
+}
+
+export function getRecordDate(record: {
+  occurredAt?: Timestamp | null;
+  createdAt?: Timestamp | null;
+}): Date {
+  return (record.occurredAt ?? record.createdAt)?.toDate() ?? new Date();
+}
+
+export function getRecordMillis(record: {
+  occurredAt?: Timestamp | null;
+  createdAt?: Timestamp | null;
+}): number {
+  return (record.occurredAt ?? record.createdAt)?.toMillis() ?? Date.now();
+}
+
 export function formatShortDate(ts?: Timestamp | null): string {
   if (!ts) return 'Hoje';
   return ts.toDate().toLocaleDateString('pt-BR', {

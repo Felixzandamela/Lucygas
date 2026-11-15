@@ -2,6 +2,7 @@ import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { getRecordMillis } from '../lib/formatters';
 import type { Customer, Cylinder, Depot, Expense, Sale, StockMovement } from '../types/gas';
 
 export interface DepotDataState {
@@ -116,7 +117,7 @@ export function useDepotData(): DepotDataState {
             id: d.id,
             ...(d.data({ serverTimestamps: 'estimate' }) as Omit<Sale, 'id'>),
           }))
-          .sort((a, b) => (b.createdAt?.toMillis() ?? Date.now()) - (a.createdAt?.toMillis() ?? Date.now()));
+          .sort((a, b) => getRecordMillis(b) - getRecordMillis(a));
         setSales(items);
         markLoaded('sales', snap.metadata.hasPendingWrites);
       },
@@ -134,7 +135,7 @@ export function useDepotData(): DepotDataState {
             id: d.id,
             ...(d.data({ serverTimestamps: 'estimate' }) as Omit<StockMovement, 'id'>),
           }))
-          .sort((a, b) => (b.createdAt?.toMillis() ?? Date.now()) - (a.createdAt?.toMillis() ?? Date.now()));
+          .sort((a, b) => getRecordMillis(b) - getRecordMillis(a));
         setMovements(items);
         markLoaded('movements', snap.metadata.hasPendingWrites);
       },
@@ -152,7 +153,7 @@ export function useDepotData(): DepotDataState {
             id: d.id,
             ...(d.data({ serverTimestamps: 'estimate' }) as Omit<Expense, 'id'>),
           }))
-          .sort((a, b) => (b.createdAt?.toMillis() ?? Date.now()) - (a.createdAt?.toMillis() ?? Date.now()));
+          .sort((a, b) => getRecordMillis(b) - getRecordMillis(a));
         setExpenses(items);
         markLoaded('expenses', snap.metadata.hasPendingWrites);
       },

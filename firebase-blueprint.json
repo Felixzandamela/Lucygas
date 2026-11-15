@@ -236,6 +236,10 @@
           "type": "string",
           "format": "date-time"
         },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
@@ -306,6 +310,10 @@
         "createdAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "occurredAt": {
+          "type": "string",
+          "format": "date-time"
         }
       },
       "required": ["ownerId", "cylinderId", "cylinderCode", "movementType", "fullDelta", "emptyDelta", "note", "createdAt"]
@@ -334,6 +342,10 @@
           "type": "number"
         },
         "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "occurredAt": {
           "type": "string",
           "format": "date-time"
         }

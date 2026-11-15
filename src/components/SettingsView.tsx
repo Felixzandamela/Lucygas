@@ -3,23 +3,42 @@ import {
   BellOff,
   BellRing,
   CheckCircle2,
+  History,
   Monitor,
   Moon,
   Plus,
   Send,
   Sun,
+  Trash2,
   X,
 } from 'lucide-react';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { type ThemeMode, useTheme } from '../contexts/ThemeContext';
 import type { PushNotificationPrefs, PushPermissionState } from '../hooks/usePushNotifications';
-import { updateCylindersMinStock, updateDepotSettings } from '../services/depotService';
-import { type CurrencyCode, type Cylinder, type Depot, FIELD_LIMITS } from '../types/gas';
+import { getRecordMillis } from '../lib/formatters';
+import {
+  discardRecordsBatch,
+  updateCylindersMinStock,
+  updateDepotSettings,
+} from '../services/depotService';
+import {
+  type CurrencyCode,
+  type Cylinder,
+  type Depot,
+  type Expense,
+  FIELD_LIMITS,
+  type Sale,
+  type StockMovement,
+} from '../types/gas';
+import { getHistoricalDraftKey, HistoricalLedgerModal } from './HistoricalLedgerModal';
 
 interface SettingsViewProps {
   uid: string;
   depot: Depot | null;
   cylinders: Cylinder[];
+  sales: Sale[];
+  movements: StockMovement[];
+  expenses: Expense[];
   pushControls?: {
     permission: PushPermissionState;
     prefs: PushNotificationPrefs;
@@ -58,7 +77,15 @@ const THEME_OPTIONS: {
   },
 ];
 
-export function SettingsView({ uid, depot, cylinders, pushControls }: SettingsViewProps) {
+export function SettingsView({
+  uid,
+  depot,
+  cylinders,
+  sales,
+  movements,
+  expenses,
+  pushControls,
+}: SettingsViewProps) {
   const { theme, setTheme } = useTheme();
   const [name, setName] = useState('');
   const [currency, setCurrency] = useState<CurrencyCode>('BRL');
@@ -71,6 +98,57 @@ export function SettingsView({ uid, depot, cylinders, pushControls }: SettingsVi
   const [minStocks, setMinStocks] = useState<Record<string, number>>({});
   const [savingMinStock, setSavingMinStock] = useState(false);
   const [savedMinStockNotice, setSavedMinStockNotice] = useState(false);
+
+  const [showHistoricalModal, setShowHistoricalModal] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(`lucygas_historical_modal_open_${uid}`) === '1';
+  });
+  const [hasSavedDraft, setHasSavedDraft] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return Boolean(window.localStorage.getItem(getHistoricalDraftKey(uid)));
+  });
+  const [confirmDiscardRecent, setConfirmDiscardRecent] = useState(false);
+  const [discardingRecent, setDiscardingRecent] = useState(false);
+  const [dataNotice, setDataNotice] = useState<string | null>(null);
+
+  const openHistoricalModal = () => {
+    setShowHistoricalModal(true);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(`lucygas_historical_modal_open_${uid}`, '1');
+    }
+  };
+
+  const closeHistoricalModal = () => {
+    setShowHistoricalModal(false);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(`lucygas_historical_modal_open_${uid}`);
+      setHasSavedDraft(Boolean(window.localStorage.getItem(getHistoricalDraftKey(uid))));
+    }
+  };
+
+  const todayRecords = useMemo(() => {
+    const now = new Date();
+    const startOfToday = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      0,
+      0,
+      0,
+      0
+    ).getTime();
+
+    const todaySales = sales.filter((s) => getRecordMillis(s) >= startOfToday);
+    const todayMovements = movements.filter((m) => getRecordMillis(m) >= startOfToday);
+    const todayExpenses = expenses.filter((e) => getRecordMillis(e) >= startOfToday);
+
+    return {
+      sales: todaySales,
+      movements: todayMovements,
+      expenses: todayExpenses,
+      totalCount: todaySales.length + todayMovements.length + todayExpenses.length,
+    };
+  }, [sales, movements, expenses]);
 
   useEffect(() => {
     if (depot) {
@@ -136,8 +214,94 @@ export function SettingsView({ uid, depot, cylinders, pushControls }: SettingsVi
     }
   };
 
+  const handleDiscardSavedDraft = () => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(getHistoricalDraftKey(uid));
+    }
+    setHasSavedDraft(false);
+    setDataNotice('Rascunho de reconstrução de histórico descartado.');
+  };
+
+  const handleDiscardTodayOnly = async () => {
+    setDiscardingRecent(true);
+    setDataNotice(null);
+    try {
+      await discardRecordsBatch(
+        uid,
+        todayRecords.sales,
+        todayRecords.movements,
+        todayRecords.expenses
+      );
+      setDataNotice(
+        `Registros de hoje descartados (${todayRecords.sales.length} vendas, ${todayRecords.movements.length} movimentações, ${todayRecords.expenses.length} despesas).`
+      );
+      setConfirmDiscardRecent(false);
+    } finally {
+      setDiscardingRecent(false);
+    }
+  };
+
   return (
     <div className="max-w-3xl space-y-8">
+      {/* Historical Correction & Ledger Reconstruction */}
+      <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-4">
+        <div className="pb-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-display text-base font-semibold text-slate-900 dark:text-slate-100">
+              Correcção de histórico
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Descarte registros de hoje ou reconstrua o histórico de vendas e estoque por intervalo de datas
+            </p>
+          </div>
+          <span className="font-mono text-xs px-2.5 py-1 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+            Hoje: {todayRecords.sales.length} vendas · {todayRecords.movements.length} mov.
+          </span>
+        </div>
+
+        {dataNotice && (
+          <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 rounded-lg p-3.5 flex items-start gap-2.5 text-xs text-emerald-900 dark:text-emerald-200">
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0 mt-0.5" />
+            <span>{dataNotice}</span>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={openHistoricalModal}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 cursor-pointer whitespace-nowrap"
+          >
+            <History className="w-4 h-4" />
+            <span>
+              Reconstruir Histórico
+              {hasSavedDraft ? ' · Rascunho salvo' : ''}
+            </span>
+          </button>
+
+          {hasSavedDraft && (
+            <button
+              type="button"
+              onClick={handleDiscardSavedDraft}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-lg border border-amber-300 dark:border-amber-800/70 bg-amber-50/80 dark:bg-amber-950/35 text-xs font-semibold text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-950/60 cursor-pointer whitespace-nowrap"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Descartar Rascunho</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            disabled={todayRecords.totalCount === 0}
+            onClick={() => setConfirmDiscardRecent(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50/70 dark:bg-red-950/30 text-xs font-semibold text-red-700 dark:text-red-400 hover:bg-red-100/80 dark:hover:bg-red-950/60 disabled:opacity-45 cursor-pointer whitespace-nowrap"
+          >
+            <Trash2 className="w-4 h-4" />
+            <span>Descartar hoje ({todayRecords.totalCount})</span>
+          </button>
+        </div>
+      </section>
+
       {/* Appearance & Theme Selector */}
       <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-4">
         <div className="pb-4 border-b border-slate-100 dark:border-slate-800">
@@ -261,7 +425,7 @@ export function SettingsView({ uid, depot, cylinders, pushControls }: SettingsVi
           <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
             Equipe de Entregadores ({drivers.length}/{FIELD_LIMITS.MAX_DRIVERS})
           </label>
-          <div className="flex gap-2">
+          <div className="flex gap-2 min-w-0">
             <input
               type="text"
               maxLength={FIELD_LIMITS.DRIVER_NAME}
@@ -274,14 +438,14 @@ export function SettingsView({ uid, depot, cylinders, pushControls }: SettingsVi
                 }
               }}
               placeholder="Nome do entregador..."
-              className="flex-1 h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
+              className="flex-1 min-w-0 w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
             />
             <button
               type="button"
               onClick={handleAddDriver}
-              className="px-4 h-10 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              className="shrink-0 px-3.5 sm:px-4 h-10 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <Plus className="w-3.5 h-3.5 shrink-0" />
               <span>Adicionar</span>
             </button>
           </div>
@@ -530,6 +694,58 @@ export function SettingsView({ uid, depot, cylinders, pushControls }: SettingsVi
             </div>
           )}
         </section>
+      )}
+      {showHistoricalModal && (
+        <HistoricalLedgerModal
+          uid={uid}
+          currency={depot?.currency ?? 'MZN'}
+          cylinders={cylinders}
+          sales={sales}
+          movements={movements}
+          expenses={expenses}
+          todayCounts={{
+            sales: todayRecords.sales.length,
+            movements: todayRecords.movements.length,
+            expenses: todayRecords.expenses.length,
+          }}
+          todayItems={{
+            sales: todayRecords.sales,
+            movements: todayRecords.movements,
+            expenses: todayRecords.expenses,
+          }}
+          onClose={closeHistoricalModal}
+          onSuccess={(msg) => setDataNotice(msg)}
+        />
+      )}
+
+      {confirmDiscardRecent && (
+        <div className="fixed inset-0 z-50 bg-slate-950/50 dark:bg-slate-950/75 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl w-full max-w-md p-6 space-y-4 shadow-xl">
+            <h3 className="font-display text-lg font-semibold text-slate-900 dark:text-slate-100">
+              Descartar dados de hoje?
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              Serão removidos {todayRecords.sales.length} venda(s), {todayRecords.movements.length} movimentação(ões) e {todayRecords.expenses.length} despesa(s) registradas hoje. O estoque atual dos botijões não será alterado automaticamente (use &ldquo;Reconstruir Histórico&rdquo; se quiser recalcular o estoque junto).
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDiscardRecent(false)}
+                className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={discardingRecent}
+                onClick={handleDiscardTodayOnly}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 cursor-pointer"
+              >
+                {discardingRecent ? 'Descartando...' : 'Confirmar Descarte'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

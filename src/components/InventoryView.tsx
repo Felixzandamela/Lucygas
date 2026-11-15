@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import cylinderStudioImg from '../assets/images/gas_cylinder_studio_1794631289411.jpg';
-import { formatCurrency, formatDateTime } from '../lib/formatters';
+import { formatCurrency, formatDateTime, getRecordTimestamp } from '../lib/formatters';
 import { readFileAsDataUrl } from '../lib/imageUtils';
 import {
   adjustCylinderStock,
@@ -51,6 +51,7 @@ export function InventoryView({
   const [fullQtyInput, setFullQtyInput] = useState<number>(10);
   const [emptyQtyInput, setEmptyQtyInput] = useState<number>(10);
   const [movementNote, setMovementNote] = useState<string>('');
+  const [movementDate, setMovementDate] = useState<string>('');
   const [savingStock, setSavingStock] = useState(false);
 
   const [editModalCyl, setEditModalCyl] = useState<Cylinder | null>(null);
@@ -105,6 +106,7 @@ export function InventoryView({
           : target.emptyCount
     );
     setMovementNote('');
+    setMovementDate('');
   };
 
   const handleSelectStockCylinder = (cylId: string) => {
@@ -182,7 +184,8 @@ export function InventoryView({
         fullDelta = fullQtyInput - stockModalCyl.fullCount;
         emptyDelta = emptyQtyInput - stockModalCyl.emptyCount;
       }
-      await adjustCylinderStock(uid, stockModalCyl, movementType, fullDelta, emptyDelta, movementNote);
+      const occurredAt = movementDate ? new Date(`${movementDate}T12:00:00`) : undefined;
+      await adjustCylinderStock(uid, stockModalCyl, movementType, fullDelta, emptyDelta, movementNote, occurredAt);
       setStockModalCylId(null);
     } finally {
       setSavingStock(false);
@@ -537,7 +540,7 @@ export function InventoryView({
                 {movements.slice(0, 20).map((mov) => (
                   <tr key={mov.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
                     <td className="py-2.5 px-4 font-mono text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                      {formatDateTime(mov.createdAt)}
+                      {formatDateTime(getRecordTimestamp(mov))}
                     </td>
                     <td className="py-2.5 px-4 font-medium text-slate-900 dark:text-slate-100">{mov.cylinderCode}</td>
                     <td className="py-2.5 px-4 text-xs text-slate-700 dark:text-slate-300">
@@ -750,6 +753,19 @@ export function InventoryView({
                   onChange={(e) => setMovementNote(e.target.value)}
                   placeholder="Ex.: Carga manhã NF 4021"
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Data da movimentação (opcional — padrão: agora)
+                </label>
+                <input
+                  type="date"
+                  max={new Date().toISOString().slice(0, 10)}
+                  value={movementDate}
+                  onChange={(e) => setMovementDate(e.target.value)}
+                  className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                 />
               </div>
 

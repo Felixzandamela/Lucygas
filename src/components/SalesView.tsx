@@ -1,9 +1,9 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Check, Download, Eye, FileText, List, Map as MapIcon, Printer, Search, Truck, X, XCircle } from 'lucide-react';
+import { Check, Download, Eye, FileText, List, Map as MapIcon, Printer, Search, Trash2, TrendingUp, Truck, X, XCircle } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { formatCurrency, formatDateTime } from '../lib/formatters';
-import { markSalePaid, updateSaleDelivery } from '../services/depotService';
+import { formatCurrency, formatDateTime, getRecordDate, getRecordMillis, getRecordTimestamp } from '../lib/formatters';
+import { deleteSaleRecord, markSalePaid, updateSaleDelivery } from '../services/depotService';
 import {
   type CurrencyCode,
   type Customer,
@@ -60,6 +60,7 @@ export function SalesView({
   const [receiptSale, setReceiptSale] = useState<Sale | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<Sale | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Sale | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
 
   const dateBounds = useMemo(() => {
@@ -89,7 +90,7 @@ export function SalesView({
   const periodAndSearchSales = useMemo(() => {
     const q = search.trim().toLowerCase();
     return sales.filter((s) => {
-      const ms = s.createdAt?.toMillis() ?? Date.now();
+      const ms = getRecordMillis(s);
       if (ms < dateBounds.start || ms > dateBounds.end) return false;
       if (!q) return true;
       return (
@@ -125,7 +126,7 @@ export function SalesView({
 
   const periodExpenses = useMemo(() => {
     return expenses.reduce((acc, exp) => {
-      const ms = exp.createdAt?.toMillis() ?? Date.now();
+      const ms = getRecordMillis(exp);
       if (ms < dateBounds.start || ms > dateBounds.end) return acc;
       return acc + exp.amount;
     }, 0);
@@ -221,7 +222,7 @@ export function SalesView({
       const profit = getSaleProfit(s);
       return [
         escapeCell(s.orderNumber),
-        escapeCell(formatDateTime(s.createdAt)),
+        escapeCell(formatDateTime(getRecordTimestamp(s))),
         escapeCell(s.customerName),
         escapeCell(s.customerPhone || ''),
         escapeCell(s.deliveryAddress || 'Retirada no Balcão'),
@@ -344,7 +345,7 @@ export function SalesView({
 
     const tableRows = filteredSales.map((s) => [
       s.orderNumber,
-      formatDateTime(s.createdAt),
+      formatDateTime(getRecordTimestamp(s)),
       s.customerName,
       `${s.quantity}x ${s.cylinderCode} (${s.saleMode === 'exchange' ? 'Troca' : 'Casco novo'})`,
       `${PAYMENT_METHOD_LABELS[s.paymentMethod] ?? s.paymentMethod}\n${
@@ -433,6 +434,255 @@ export function SalesView({
     }
 
     doc.save(`relatorio-vendas-${getPeriodSuffix()}.pdf`);
+  };
+
+  const handleExportProfitExtractPdf = () => {
+    const activeSales = filteredSales.filter((s) => s.deliveryStatus !== 'cancelled');
+    const includeExpenses = !hasNarrowFilter && periodExpenses > 0;
+    if (activeSales.length === 0 && !includeExpenses) return;
+
+    interface DailyGroup {
+      dateKey: string;
+      orders: number;
+      units: number;
+      revenue: number;
+      cost: number;
+      profit: number;
+      expenses: number;
+    }
+
+    const dailyMap = new Map<string, DailyGroup>();
+    const ensureDay = (dateKey: string): DailyGroup => {
+      let existing = dailyMap.get(dateKey);
+      if (!existing) {
+        existing = {
+          dateKey,
+          orders: 0,
+          units: 0,
+          revenue: 0,
+          cost: 0,
+          profit: 0,
+          expenses: 0,
+        };
+        dailyMap.set(dateKey, existing);
+      }
+      return existing;
+    };
+
+    for (const s of activeSales) {
+      const dateKey = toInputDate(getRecordDate(s));
+      const day = ensureDay(dateKey);
+      const cost = getSaleCost(s);
+      day.orders += 1;
+      day.units += s.quantity;
+      day.revenue += s.totalAmount;
+      day.cost += cost;
+      day.profit += s.totalAmount - cost;
+    }
+
+    if (includeExpenses) {
+      for (const exp of expenses) {
+        const ms = getRecordMillis(exp);
+        if (ms < dateBounds.start || ms > dateBounds.end) continue;
+        const dateKey = toInputDate(getRecordDate(exp));
+        const day = ensureDay(dateKey);
+        day.expenses += exp.amount;
+      }
+    }
+
+    const sortedDays = Array.from(dailyMap.values()).sort((a, b) =>
+      a.dateKey.localeCompare(b.dateKey)
+    );
+    if (sortedDays.length === 0) return;
+
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4',
+    });
+
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 14;
+
+    const statusLabel =
+      statusFilter === 'all' ? 'Todos' : DELIVERY_STATUS_LABELS[statusFilter];
+    const generatedAt = new Date().toLocaleString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    // Header
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.setTextColor(15, 23, 42);
+    doc.text(depotName, margin, 16);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(71, 85, 105);
+    doc.text('Mini Extrato de Lucros Agrupados por Data', margin, 21.5);
+
+    doc.setFontSize(8.5);
+    doc.text(`Período: ${getPeriodLabel()}`, pageWidth - margin, 15.5, { align: 'right' });
+    doc.text(`Status: ${statusLabel}  |  Emitido: ${generatedAt}`, pageWidth - margin, 21, {
+      align: 'right',
+    });
+
+    doc.setDrawColor(226, 232, 240);
+    doc.line(margin, 25, pageWidth - margin, 25);
+
+    // Summary line
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(15, 23, 42);
+    const summaryLine1 = [
+      `Dias: ${sortedDays.length}`,
+      `Pedidos: ${filteredSummary.activeCount}`,
+      `Botijões: ${filteredSummary.totalUnits}`,
+      `Bruto: ${formatCurrency(filteredSummary.totalValue, currency)}`,
+    ].join('   •   ');
+    doc.text(summaryLine1, margin, 31);
+
+    const summaryLine2 = [
+      `Custo (CMV): ${formatCurrency(filteredSummary.totalCost, currency)}`,
+      `Lucro Botijas: ${formatCurrency(filteredSummary.cylindersProfit, currency)}`,
+      ...(includeExpenses
+        ? [`Despesas: ${formatCurrency(periodExpenses, currency)}`]
+        : []),
+      `Líquido Est.: ${formatCurrency(filteredSummary.estimatedNetResult, currency)}`,
+    ].join('   •   ');
+
+    if (filteredSummary.estimatedNetResult >= 0) {
+      doc.setTextColor(4, 120, 87);
+    } else {
+      doc.setTextColor(185, 28, 28);
+    }
+    doc.text(summaryLine2, margin, 36.5);
+    doc.setTextColor(15, 23, 42);
+
+    const weekdayShort = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+    const formatDateWithDay = (iso: string) => {
+      const [y, m, d] = iso.split('-').map(Number);
+      const dt = new Date(y, (m || 1) - 1, d || 1);
+      const wd = weekdayShort[dt.getDay()] ?? '';
+      return `${formatBrDate(iso)} (${wd})`;
+    };
+
+    const headRow = includeExpenses
+      ? [['Data', 'Ped.', 'Bot.', 'Bruto', 'Custo', 'Lucro Bot.', 'Despesas', 'Líquido']]
+      : [['Data', 'Pedidos', 'Botijões', 'Valor Bruto', 'Custo (CMV)', 'Lucro Estimado']];
+
+    const bodyRows = sortedDays.map((day) => {
+      const base = [
+        formatDateWithDay(day.dateKey),
+        String(day.orders),
+        String(day.units),
+        formatCurrency(day.revenue, currency),
+        formatCurrency(day.cost, currency),
+        formatCurrency(day.profit, currency),
+      ];
+      if (includeExpenses) {
+        const net = day.profit - day.expenses;
+        base.push(
+          day.expenses > 0 ? formatCurrency(day.expenses, currency) : '—',
+          formatCurrency(net, currency)
+        );
+      }
+      return base;
+    });
+
+    const footRow = includeExpenses
+      ? [
+          [
+            `Total (${sortedDays.length} dias)`,
+            String(filteredSummary.activeCount),
+            String(filteredSummary.totalUnits),
+            formatCurrency(filteredSummary.totalValue, currency),
+            formatCurrency(filteredSummary.totalCost, currency),
+            formatCurrency(filteredSummary.cylindersProfit, currency),
+            formatCurrency(periodExpenses, currency),
+            formatCurrency(filteredSummary.estimatedNetResult, currency),
+          ],
+        ]
+      : [
+          [
+            `Total (${sortedDays.length} dias)`,
+            String(filteredSummary.activeCount),
+            String(filteredSummary.totalUnits),
+            formatCurrency(filteredSummary.totalValue, currency),
+            formatCurrency(filteredSummary.totalCost, currency),
+            formatCurrency(filteredSummary.cylindersProfit, currency),
+          ],
+        ];
+
+    autoTable(doc, {
+      startY: 41,
+      margin: { left: margin, right: margin, bottom: 16 },
+      head: headRow,
+      body: bodyRows,
+      foot: footRow,
+      showFoot: 'lastPage',
+      theme: 'striped',
+      styles: {
+        font: 'helvetica',
+        fontSize: includeExpenses ? 7.8 : 8.5,
+        cellPadding: 2.4,
+        textColor: [30, 41, 59],
+        valign: 'middle',
+      },
+      headStyles: {
+        fillColor: [15, 23, 42],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        fontSize: includeExpenses ? 7.8 : 8.5,
+      },
+      footStyles: {
+        fillColor: [241, 245, 249],
+        textColor: [15, 23, 42],
+        fontStyle: 'bold',
+        fontSize: includeExpenses ? 8 : 8.6,
+      },
+      alternateRowStyles: {
+        fillColor: [248, 250, 252],
+      },
+      columnStyles: includeExpenses
+        ? {
+            0: { cellWidth: 30 },
+            1: { halign: 'right', cellWidth: 12 },
+            2: { halign: 'right', cellWidth: 12 },
+            3: { halign: 'right' },
+            4: { halign: 'right' },
+            5: { halign: 'right', fontStyle: 'bold' },
+            6: { halign: 'right' },
+            7: { halign: 'right', fontStyle: 'bold' },
+          }
+        : {
+            0: { cellWidth: 34 },
+            1: { halign: 'right', cellWidth: 18 },
+            2: { halign: 'right', cellWidth: 20 },
+            3: { halign: 'right' },
+            4: { halign: 'right' },
+            5: { halign: 'right', fontStyle: 'bold' },
+          },
+    });
+
+    const totalPages = doc.getNumberOfPages();
+    for (let i = 1; i <= totalPages; i++) {
+      doc.setPage(i);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`${depotName} · Mini Extrato de Lucros`, margin, pageHeight - 8);
+      doc.text(`Página ${i} de ${totalPages}`, pageWidth - margin, pageHeight - 8, {
+        align: 'right',
+      });
+    }
+
+    doc.save(`mini-extrato-lucros-${getPeriodSuffix()}.pdf`);
   };
 
   const handleStatusChange = async (
@@ -533,6 +783,16 @@ export function SalesView({
             >
               <FileText className="w-3.5 h-3.5" />
               <span>Exportar PDF</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportProfitExtractPdf}
+              disabled={filteredSummary.activeCount === 0 && (hasNarrowFilter || periodExpenses === 0)}
+              className="h-10 px-3.5 rounded-lg border border-emerald-300 dark:border-emerald-800/70 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-950/70 disabled:opacity-50 inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <TrendingUp className="w-3.5 h-3.5" />
+              <span>Extrato Lucros (PDF)</span>
             </button>
           </div>
         </div>
@@ -683,7 +943,7 @@ export function SalesView({
                       <div className="font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">
                         {sale.orderNumber}
                       </div>
-                      <div className="text-xs text-slate-500 dark:text-slate-400">{formatDateTime(sale.createdAt)}</div>
+                      <div className="text-xs text-slate-500 dark:text-slate-400">{formatDateTime(getRecordTimestamp(sale))}</div>
                     </td>
                     <td className="py-3 px-4">
                       <div className="font-medium text-slate-900 dark:text-slate-100">{sale.customerName}</div>
@@ -832,7 +1092,7 @@ export function SalesView({
                 <div className="flex justify-between">
                   <dt className="text-slate-500 dark:text-slate-400">Data e Hora</dt>
                   <dd className="font-mono text-xs text-slate-900 dark:text-slate-100">
-                    {formatDateTime(selectedSale.createdAt)}
+                    {formatDateTime(getRecordTimestamp(selectedSale))}
                   </dd>
                 </div>
                 <div className="flex justify-between">
@@ -942,6 +1202,18 @@ export function SalesView({
               )}
               <button
                 type="button"
+                onClick={() => {
+                  const target = selectedSale;
+                  setSelectedSale(null);
+                  setDeleteTarget(target);
+                }}
+                className="w-full py-2.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50/60 dark:bg-red-950/30 text-sm font-medium text-red-700 dark:text-red-400 hover:bg-red-100/70 dark:hover:bg-red-950/60 inline-flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Descartar / Excluir Registro</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setSelectedSale(null)}
                 className="w-full py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
               >
@@ -987,6 +1259,44 @@ export function SalesView({
                 className="px-4 py-2 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 cursor-pointer"
               >
                 {busyId === cancelTarget.id ? 'Cancelando...' : 'Confirmar Cancelamento'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Delete Confirmation Modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-950/40 dark:bg-slate-950/70 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl w-full max-w-md p-6 space-y-4">
+            <h3 className="font-display text-lg font-semibold text-slate-900 dark:text-slate-100">
+              Excluir Registro {deleteTarget.orderNumber}?
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              Esta ação remove apenas o registro da venda ({deleteTarget.quantity}x {deleteTarget.cylinderCode}) sem alterar o estoque atual do pátio.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                Voltar
+              </button>
+              <button
+                type="button"
+                disabled={busyId === deleteTarget.id}
+                onClick={async () => {
+                  setBusyId(deleteTarget.id);
+                  try {
+                    await deleteSaleRecord(uid, deleteTarget.id);
+                    setDeleteTarget(null);
+                  } finally {
+                    setBusyId(null);
+                  }
+                }}
+                className="px-4 py-2 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 cursor-pointer"
+              >
+                {busyId === deleteTarget.id ? 'Excluindo...' : 'Excluir Registro'}
               </button>
             </div>
           </div>
