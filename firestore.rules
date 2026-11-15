@@ -1,0 +1,266 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isDepotOwner(depotId) {
+      return isVerifiedUser() && depotId == request.auth.uid;
+    }
+
+    function parentDepotOwned(depotId) {
+      return get(/databases/$(database)/documents/depots/$(depotId)).data.ownerId == request.auth.uid;
+    }
+
+    function isValidDepot(data) {
+      return data.keys().hasAll(['ownerId', 'name', 'currency', 'deliveryFee', 'drivers', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'currency', 'deliveryFee', 'drivers', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.currency in ['BRL', 'MZN', 'EUR']
+        && data.deliveryFee is number && data.deliveryFee >= 0 && data.deliveryFee <= 10000
+        && data.drivers is list && data.drivers.size() <= 20
+        && (data.drivers.size() == 0 || (data.drivers[0] is string && data.drivers[0].size() <= 60))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCylinder(data) {
+      return data.keys().hasAll(['ownerId', 'code', 'name', 'weightKg', 'fullCount', 'emptyCount', 'salePrice', 'shellPrice', 'costPrice', 'minStock', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'code', 'name', 'weightKg', 'fullCount', 'emptyCount', 'salePrice', 'shellPrice', 'costPrice', 'minStock', 'imageUrl', 'updatedAt'])
+        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 20
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 60
+        && data.weightKg is number && data.weightKg > 0 && data.weightKg <= 1000
+        && data.fullCount is number && data.fullCount >= 0 && data.fullCount <= 100000
+        && data.emptyCount is number && data.emptyCount >= 0 && data.emptyCount <= 100000
+        && data.salePrice is number && data.salePrice >= 0 && data.salePrice <= 1000000
+        && data.shellPrice is number && data.shellPrice >= 0 && data.shellPrice <= 1000000
+        && data.costPrice is number && data.costPrice >= 0 && data.costPrice <= 1000000
+        && data.minStock is number && data.minStock >= 0 && data.minStock <= 10000
+        && (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 150000))
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['ownerId', 'name', 'phone', 'address', 'neighborhood', 'notes', 'totalOrders', 'totalSpent', 'creditBalance', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'name', 'phone', 'address', 'neighborhood', 'notes', 'totalOrders', 'totalSpent', 'creditBalance', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.phone is string && data.phone.size() <= 30
+        && data.address is string && data.address.size() <= 160
+        && data.neighborhood is string && data.neighborhood.size() <= 80
+        && data.notes is string && data.notes.size() <= 240
+        && data.totalOrders is number && data.totalOrders >= 0 && data.totalOrders <= 1000000
+        && data.totalSpent is number && data.totalSpent >= 0 && data.totalSpent <= 100000000
+        && data.creditBalance is number && data.creditBalance >= 0 && data.creditBalance <= 100000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSale(data) {
+      return data.keys().hasAll([
+          'ownerId', 'orderNumber', 'customerId', 'customerName', 'customerPhone',
+          'deliveryAddress', 'cylinderId', 'cylinderCode', 'saleMode', 'quantity',
+          'unitPrice', 'deliveryFee', 'discount', 'totalAmount', 'unitCost',
+          'fulfillmentType', 'driverName', 'paymentMethod', 'paymentStatus',
+          'deliveryStatus', 'notes', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'orderNumber', 'customerId', 'customerName', 'customerPhone',
+          'deliveryAddress', 'cylinderId', 'cylinderCode', 'saleMode', 'quantity',
+          'unitPrice', 'deliveryFee', 'discount', 'totalAmount', 'unitCost',
+          'fulfillmentType', 'driverName', 'paymentMethod', 'paymentStatus',
+          'deliveryStatus', 'notes', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.orderNumber is string && data.orderNumber.size() >= 1 && data.orderNumber.size() <= 30
+        && data.customerId is string && data.customerId.size() <= 128
+        && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 80
+        && data.customerPhone is string && data.customerPhone.size() <= 30
+        && data.deliveryAddress is string && data.deliveryAddress.size() <= 160
+        && data.cylinderId is string && isValidId(data.cylinderId)
+        && data.cylinderCode is string && data.cylinderCode.size() >= 1 && data.cylinderCode.size() <= 20
+        && data.saleMode in ['exchange', 'full_with_shell']
+        && data.quantity is number && data.quantity >= 1 && data.quantity <= 500
+        && data.unitPrice is number && data.unitPrice >= 0 && data.unitPrice <= 1000000
+        && data.deliveryFee is number && data.deliveryFee >= 0 && data.deliveryFee <= 100000
+        && data.discount is number && data.discount >= 0 && data.discount <= 1000000
+        && data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 100000000
+        && data.unitCost is number && data.unitCost >= 0 && data.unitCost <= 1000000
+        && data.fulfillmentType in ['delivery', 'pickup']
+        && data.driverName is string && data.driverName.size() <= 60
+        && data.paymentMethod in ['mpesa', 'emola', 'cash', 'card', 'credit', 'pix']
+        && data.paymentStatus in ['paid', 'pending']
+        && data.deliveryStatus in ['pending', 'in_route', 'delivered', 'cancelled']
+        && data.notes is string && data.notes.size() <= 240
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStockMovement(data) {
+      return data.keys().hasAll(['ownerId', 'cylinderId', 'cylinderCode', 'movementType', 'fullDelta', 'emptyDelta', 'note', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'cylinderId', 'cylinderCode', 'movementType', 'fullDelta', 'emptyDelta', 'note', 'createdAt'])
+        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.cylinderId is string && isValidId(data.cylinderId)
+        && data.cylinderCode is string && data.cylinderCode.size() >= 1 && data.cylinderCode.size() <= 20
+        && data.movementType in ['restock', 'sale', 'return_empty', 'adjustment', 'cancel_restore']
+        && data.fullDelta is number && data.fullDelta >= -10000 && data.fullDelta <= 10000
+        && data.emptyDelta is number && data.emptyDelta >= -10000 && data.emptyDelta <= 10000
+        && data.note is string && data.note.size() <= 160
+        && data.createdAt is timestamp;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['ownerId', 'category', 'description', 'amount', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'category', 'description', 'amount', 'createdAt'])
+        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.category in ['restock', 'fuel', 'maintenance', 'payroll', 'other']
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 120
+        && data.amount is number && data.amount > 0 && data.amount <= 100000000
+        && data.createdAt is timestamp;
+    }
+
+    match /depots/{depotId} {
+      allow get: if isValidId(depotId) && isDepotOwner(depotId) && (resource == null || existing().ownerId == request.auth.uid);
+      allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
+      allow create: if isValidId(depotId)
+        && isDepotOwner(depotId)
+        && isValidDepot(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(depotId)
+        && isDepotOwner(depotId)
+        && isValidDepot(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'currency', 'deliveryFee', 'drivers', 'updatedAt']);
+      allow delete: if false;
+
+      match /cylinders/{cylinderId} {
+        allow get: if isValidId(depotId) && isValidId(cylinderId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(depotId) && isValidId(cylinderId)
+          && isDepotOwner(depotId)
+          && isValidCylinder(incoming())
+          && parentDepotOwned(depotId)
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(depotId) && isValidId(cylinderId)
+          && isDepotOwner(depotId)
+          && isValidCylinder(incoming())
+          && parentDepotOwned(depotId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['fullCount', 'emptyCount', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'weightKg', 'salePrice', 'shellPrice', 'costPrice', 'minStock', 'imageUrl', 'updatedAt'])
+          );
+        allow delete: if isValidId(depotId) && isValidId(cylinderId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+      }
+
+      match /customers/{customerId} {
+        allow get: if isValidId(depotId) && isValidId(customerId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(depotId) && isValidId(customerId)
+          && isDepotOwner(depotId)
+          && isValidCustomer(incoming())
+          && parentDepotOwned(depotId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(depotId) && isValidId(customerId)
+          && isDepotOwner(depotId)
+          && isValidCustomer(incoming())
+          && parentDepotOwned(depotId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'address', 'neighborhood', 'notes', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['totalOrders', 'totalSpent', 'creditBalance', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['creditBalance', 'updatedAt'])
+          );
+        allow delete: if isValidId(depotId) && isValidId(customerId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+      }
+
+      match /sales/{saleId} {
+        allow get: if isValidId(depotId) && isValidId(saleId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(depotId) && isValidId(saleId)
+          && isDepotOwner(depotId)
+          && isValidSale(incoming())
+          && parentDepotOwned(depotId)
+          && exists(/databases/$(database)/documents/depots/$(depotId)/cylinders/$(incoming().cylinderId))
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(depotId) && isValidId(saleId)
+          && isDepotOwner(depotId)
+          && isValidSale(incoming())
+          && parentDepotOwned(depotId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && existing().deliveryStatus != 'cancelled'
+          && (
+            (
+              existing().deliveryStatus in ['pending', 'in_route']
+              && incoming().diff(existing()).affectedKeys().hasOnly(['deliveryStatus', 'driverName', 'paymentStatus', 'updatedAt'])
+            ) ||
+            (
+              existing().deliveryStatus == 'delivered'
+              && existing().paymentStatus == 'pending'
+              && incoming().deliveryStatus == 'delivered'
+              && incoming().paymentStatus == 'paid'
+              && incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'updatedAt'])
+            )
+          );
+        allow delete: if false;
+      }
+
+      match /stockMovements/{movementId} {
+        allow get: if isValidId(depotId) && isValidId(movementId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(depotId) && isValidId(movementId)
+          && isDepotOwner(depotId)
+          && isValidStockMovement(incoming())
+          && parentDepotOwned(depotId)
+          && exists(/databases/$(database)/documents/depots/$(depotId)/cylinders/$(incoming().cylinderId))
+          && incoming().createdAt == request.time;
+        allow update, delete: if false;
+      }
+
+      match /expenses/{expenseId} {
+        allow get: if isValidId(depotId) && isValidId(expenseId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isValidId(depotId) && isValidId(expenseId)
+          && isDepotOwner(depotId)
+          && isValidExpense(incoming())
+          && parentDepotOwned(depotId)
+          && incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isValidId(depotId) && isValidId(expenseId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+      }
+    }
+  }
+}

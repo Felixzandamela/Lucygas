@@ -1,0 +1,6 @@
+{
+  "name": "ChamaGest",
+  "description": "Gestão operacional de vendas de gás, estoque de botijões, entregas e fluxo de caixa.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

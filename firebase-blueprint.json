@@ -1,0 +1,370 @@
+{
+  "entities": {
+    "Depot": {
+      "title": "Depot",
+      "description": "Gas distribution depot configuration and owner metadata.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["BRL", "MZN", "EUR"]
+        },
+        "deliveryFee": {
+          "type": "number"
+        },
+        "drivers": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "name", "currency", "deliveryFee", "drivers", "createdAt", "updatedAt"]
+    },
+    "Cylinder": {
+      "title": "Cylinder",
+      "description": "LPG gas cylinder product SKU and inventory counts.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "weightKg": {
+          "type": "number"
+        },
+        "fullCount": {
+          "type": "number"
+        },
+        "emptyCount": {
+          "type": "number"
+        },
+        "salePrice": {
+          "type": "number"
+        },
+        "shellPrice": {
+          "type": "number"
+        },
+        "costPrice": {
+          "type": "number"
+        },
+        "minStock": {
+          "type": "number"
+        },
+        "imageUrl": {
+          "type": "string",
+          "maxLength": 150000
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "code", "name", "weightKg", "fullCount", "emptyCount", "salePrice", "shellPrice", "costPrice", "minStock", "updatedAt"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer profile, delivery address, and purchase ledger summary.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "address": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "neighborhood": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "totalOrders": {
+          "type": "number"
+        },
+        "totalSpent": {
+          "type": "number"
+        },
+        "creditBalance": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "name", "phone", "address", "neighborhood", "notes", "totalOrders", "totalSpent", "creditBalance", "createdAt", "updatedAt"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Gas cylinder sale and delivery dispatch order.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "orderNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30
+        },
+        "customerId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "customerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "customerPhone": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "deliveryAddress": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "cylinderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "cylinderCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20
+        },
+        "saleMode": {
+          "type": "string",
+          "enum": ["exchange", "full_with_shell"]
+        },
+        "quantity": {
+          "type": "number"
+        },
+        "unitPrice": {
+          "type": "number"
+        },
+        "deliveryFee": {
+          "type": "number"
+        },
+        "discount": {
+          "type": "number"
+        },
+        "totalAmount": {
+          "type": "number"
+        },
+        "unitCost": {
+          "type": "number"
+        },
+        "fulfillmentType": {
+          "type": "string",
+          "enum": ["delivery", "pickup"]
+        },
+        "driverName": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["mpesa", "emola", "cash", "card", "credit", "pix"]
+        },
+        "paymentStatus": {
+          "type": "string",
+          "enum": ["paid", "pending"]
+        },
+        "deliveryStatus": {
+          "type": "string",
+          "enum": ["pending", "in_route", "delivered", "cancelled"]
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "orderNumber",
+        "customerId",
+        "customerName",
+        "customerPhone",
+        "deliveryAddress",
+        "cylinderId",
+        "cylinderCode",
+        "saleMode",
+        "quantity",
+        "unitPrice",
+        "deliveryFee",
+        "discount",
+        "totalAmount",
+        "unitCost",
+        "fulfillmentType",
+        "driverName",
+        "paymentMethod",
+        "paymentStatus",
+        "deliveryStatus",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StockMovement": {
+      "title": "StockMovement",
+      "description": "Audit log of full and empty cylinder inventory changes.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "cylinderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "cylinderCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20
+        },
+        "movementType": {
+          "type": "string",
+          "enum": ["restock", "sale", "return_empty", "adjustment", "cancel_restore"]
+        },
+        "fullDelta": {
+          "type": "number"
+        },
+        "emptyDelta": {
+          "type": "number"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "cylinderId", "cylinderCode", "movementType", "fullDelta", "emptyDelta", "note", "createdAt"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Operational expense entry for depot cash flow.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["restock", "fuel", "maintenance", "payroll", "other"]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "amount": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "category", "description", "amount", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/depots/{depotId}": {
+      "schema": { "$ref": "#/entities/Depot" },
+      "description": "Depot settings and metadata owned by the authenticated distributor."
+    },
+    "/depots/{depotId}/cylinders/{cylinderId}": {
+      "schema": { "$ref": "#/entities/Cylinder" },
+      "description": "LPG cylinder inventory and pricing per SKU."
+    },
+    "/depots/{depotId}/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Customer directory and credit balances."
+    },
+    "/depots/{depotId}/sales/{saleId}": {
+      "schema": { "$ref": "#/entities/Sale" },
+      "description": "Sales orders and delivery dispatch records."
+    },
+    "/depots/{depotId}/stockMovements/{movementId}": {
+      "schema": { "$ref": "#/entities/StockMovement" },
+      "description": "Immutable inventory ledger movements."
+    },
+    "/depots/{depotId}/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Operational expenses for cash flow reporting."
+    }
+  }
+}
