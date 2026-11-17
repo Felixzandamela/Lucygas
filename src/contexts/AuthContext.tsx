@@ -142,11 +142,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err) {
-      setAuthError(
-        err instanceof Error
-          ? 'Não foi possível concluir o login com o Google. Tente novamente.'
-          : 'Erro inesperado ao autenticar.'
-      );
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code || '')
+          : '';
+      const currentHost =
+        typeof window !== 'undefined' ? window.location.hostname : '';
+
+      if (code === 'auth/unauthorized-domain') {
+        setAuthError(
+          `O domínio "${currentHost}" não está autorizado no Firebase Authentication. Adicione-o em Authentication > Configurações > Domínios autorizados no Console do Firebase.`
+        );
+      } else if (code === 'auth/popup-blocked') {
+        setAuthError(
+          'O pop-up de login foi bloqueado pelo navegador. Permita pop-ups para este site e tente novamente.'
+        );
+      } else if (code === 'auth/popup-closed-by-user') {
+        setAuthError(
+          'A janela de login foi fechada antes de concluir a autenticação.'
+        );
+      } else if (code === 'auth/operation-not-allowed') {
+        setAuthError(
+          'O provedor de login Google não está ativado no Firebase Authentication deste projeto.'
+        );
+      } else if (code === 'auth/network-request-failed') {
+        setAuthError(
+          'Falha de conexão ao tentar autenticar com o Google. Verifique sua internet e tente novamente.'
+        );
+      } else {
+        setAuthError(
+          err instanceof Error
+            ? 'Não foi possível concluir o login com o Google. Tente novamente.'
+            : 'Erro inesperado ao autenticar.'
+        );
+      }
     } finally {
       setSigningIn(false);
     }
