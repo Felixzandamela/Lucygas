@@ -25,18 +25,126 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
+    function hasVerifiedEmail() {
+      return isVerifiedUser()
+        && request.auth.token.email is string
+        && request.auth.token.email.size() >= 3
+        && request.auth.token.email.size() <= 120;
+    }
+
+    function userEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function isValidMemberEmails(list) {
+      return list is list
+        && list.size() >= 1
+        && list.size() <= 20
+        && list[0] is string
+        && list[0].size() >= 3
+        && list[0].size() <= 120;
+    }
+
     function isDepotOwner(depotId) {
       return isVerifiedUser() && depotId == request.auth.uid;
     }
 
-    function parentDepotOwned(depotId) {
-      return get(/databases/$(database)/documents/depots/$(depotId)).data.ownerId == request.auth.uid;
+    function isParentDepotMember(depotId) {
+      let depotData = get(/databases/$(database)/documents/depots/$(depotId)).data;
+      return isVerifiedUser() && (
+        depotId == request.auth.uid ||
+        depotData.ownerId == request.auth.uid ||
+        (hasVerifiedEmail() && ('memberEmails' in depotData) && userEmail() in depotData.memberEmails)
+      );
+    }
+
+    function isDepotAdmin(depotId) {
+      let depotData = get(/databases/$(database)/documents/depots/$(depotId)).data;
+      return isVerifiedUser() && (
+        depotId == request.auth.uid ||
+        depotData.ownerId == request.auth.uid ||
+        (
+          hasVerifiedEmail()
+          && ('memberEmails' in depotData)
+          && userEmail() in depotData.memberEmails
+          && ('memberPermissions' in depotData)
+          && (userEmail() in depotData.memberPermissions)
+          && depotData.memberPermissions[userEmail()] is map
+          && ('manageUsers' in depotData.memberPermissions[userEmail()])
+          && depotData.memberPermissions[userEmail()].manageUsers == true
+        )
+      );
+    }
+
+    function hasDepotPerm(depotId, permKey) {
+      let depotData = get(/databases/$(database)/documents/depots/$(depotId)).data;
+      return isVerifiedUser() && (
+        depotId == request.auth.uid ||
+        depotData.ownerId == request.auth.uid ||
+        (
+          hasVerifiedEmail()
+          && ('memberEmails' in depotData)
+          && userEmail() in depotData.memberEmails
+          && (
+            !('memberPermissions' in depotData) ||
+            !(userEmail() in depotData.memberPermissions) ||
+            (
+              depotData.memberPermissions[userEmail()] is map
+              && permKey in depotData.memberPermissions[userEmail()]
+              && depotData.memberPermissions[userEmail()][permKey] == true
+            )
+          )
+        )
+      );
+    }
+
+    function isProtectedOwnerEmail(depotId, email) {
+      let depotData = get(/databases/$(database)/documents/depots/$(depotId)).data;
+      return ('memberEmails' in depotData)
+        && depotData.memberEmails is list
+        && depotData.memberEmails.size() >= 1
+        && email == depotData.memberEmails[0];
+    }
+
+    function canReadDoc(docData) {
+      return isVerifiedUser() && (
+        docData.ownerId == request.auth.uid ||
+        (hasVerifiedEmail() && ('memberEmails' in docData) && userEmail() in docData.memberEmails)
+      );
+    }
+
+    function isValidPermissionsMap(perms) {
+      return perms is map
+        && perms.keys().hasAll([
+          'viewDashboard', 'createSales', 'viewSales', 'manageDeliveries',
+          'viewInventory', 'manageInventory', 'viewCustomers', 'manageCustomers',
+          'viewFinance', 'manageExpenses', 'manageSettings', 'manageUsers'
+        ])
+        && perms.keys().hasOnly([
+          'viewDashboard', 'createSales', 'viewSales', 'manageDeliveries',
+          'viewInventory', 'manageInventory', 'viewCustomers', 'manageCustomers',
+          'viewFinance', 'manageExpenses', 'manageSettings', 'manageUsers'
+        ])
+        && perms.viewDashboard is bool
+        && perms.createSales is bool
+        && perms.viewSales is bool
+        && perms.manageDeliveries is bool
+        && perms.viewInventory is bool
+        && perms.manageInventory is bool
+        && perms.viewCustomers is bool
+        && perms.manageCustomers is bool
+        && perms.viewFinance is bool
+        && perms.manageExpenses is bool
+        && perms.manageSettings is bool
+        && perms.manageUsers is bool;
     }
 
     function isValidDepot(data) {
       return data.keys().hasAll(['ownerId', 'name', 'currency', 'deliveryFee', 'drivers', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'name', 'currency', 'deliveryFee', 'drivers', 'createdAt', 'updatedAt'])
-        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.keys().hasOnly(['ownerId', 'memberEmails', 'memberPermissions', 'name', 'currency', 'deliveryFee', 'drivers', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && (!('memberEmails' in data) || isValidMemberEmails(data.memberEmails))
+        && (!('memberPermissions' in data) || (data.memberPermissions is map && data.memberPermissions.size() <= 20))
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
         && data.currency in ['BRL', 'MZN', 'EUR']
         && data.deliveryFee is number && data.deliveryFee >= 0 && data.deliveryFee <= 10000
@@ -46,10 +154,27 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidDepotMember(data) {
+      return data.keys().hasAll(['ownerId', 'memberEmails', 'email', 'displayName', 'role', 'permissions', 'status', 'joinedUid', 'invitedByEmail', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'memberEmails', 'email', 'displayName', 'role', 'permissions', 'status', 'joinedUid', 'invitedByEmail', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && isValidMemberEmails(data.memberEmails)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 120
+        && data.displayName is string && data.displayName.size() <= 80
+        && data.role in ['admin', 'manager', 'seller', 'driver', 'inventory', 'custom']
+        && isValidPermissionsMap(data.permissions)
+        && data.status in ['invited', 'active']
+        && data.joinedUid is string && data.joinedUid.size() <= 128
+        && data.invitedByEmail is string && data.invitedByEmail.size() <= 120
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     function isValidCylinder(data) {
       return data.keys().hasAll(['ownerId', 'code', 'name', 'weightKg', 'fullCount', 'emptyCount', 'salePrice', 'shellPrice', 'costPrice', 'minStock', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'code', 'name', 'weightKg', 'fullCount', 'emptyCount', 'salePrice', 'shellPrice', 'costPrice', 'minStock', 'imageUrl', 'updatedAt'])
-        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.keys().hasOnly(['ownerId', 'memberEmails', 'code', 'name', 'weightKg', 'fullCount', 'emptyCount', 'salePrice', 'shellPrice', 'costPrice', 'minStock', 'imageUrl', 'updatedAt'])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && (!('memberEmails' in data) || isValidMemberEmails(data.memberEmails))
         && data.code is string && data.code.size() >= 1 && data.code.size() <= 20
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 60
         && data.weightKg is number && data.weightKg > 0 && data.weightKg <= 1000
@@ -65,8 +190,9 @@ service cloud.firestore {
 
     function isValidCustomer(data) {
       return data.keys().hasAll(['ownerId', 'name', 'phone', 'address', 'neighborhood', 'notes', 'totalOrders', 'totalSpent', 'creditBalance', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['ownerId', 'name', 'phone', 'address', 'neighborhood', 'notes', 'totalOrders', 'totalSpent', 'creditBalance', 'createdAt', 'updatedAt'])
-        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.keys().hasOnly(['ownerId', 'memberEmails', 'name', 'phone', 'address', 'neighborhood', 'notes', 'totalOrders', 'totalSpent', 'creditBalance', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && (!('memberEmails' in data) || isValidMemberEmails(data.memberEmails))
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
         && data.phone is string && data.phone.size() <= 30
         && data.address is string && data.address.size() <= 160
@@ -88,13 +214,14 @@ service cloud.firestore {
           'deliveryStatus', 'notes', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'ownerId', 'orderNumber', 'customerId', 'customerName', 'customerPhone',
+          'ownerId', 'memberEmails', 'orderNumber', 'customerId', 'customerName', 'customerPhone',
           'deliveryAddress', 'cylinderId', 'cylinderCode', 'saleMode', 'quantity',
           'unitPrice', 'deliveryFee', 'discount', 'totalAmount', 'unitCost',
           'fulfillmentType', 'driverName', 'paymentMethod', 'paymentStatus',
           'deliveryStatus', 'notes', 'createdAt', 'occurredAt', 'updatedAt'
         ])
-        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.ownerId is string && isValidId(data.ownerId)
+        && (!('memberEmails' in data) || isValidMemberEmails(data.memberEmails))
         && data.orderNumber is string && data.orderNumber.size() >= 1 && data.orderNumber.size() <= 30
         && data.customerId is string && data.customerId.size() <= 128
         && data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 80
@@ -122,8 +249,9 @@ service cloud.firestore {
 
     function isValidStockMovement(data) {
       return data.keys().hasAll(['ownerId', 'cylinderId', 'cylinderCode', 'movementType', 'fullDelta', 'emptyDelta', 'note', 'createdAt'])
-        && data.keys().hasOnly(['ownerId', 'cylinderId', 'cylinderCode', 'movementType', 'fullDelta', 'emptyDelta', 'note', 'createdAt', 'occurredAt'])
-        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.keys().hasOnly(['ownerId', 'memberEmails', 'cylinderId', 'cylinderCode', 'movementType', 'fullDelta', 'emptyDelta', 'note', 'createdAt', 'occurredAt'])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && (!('memberEmails' in data) || isValidMemberEmails(data.memberEmails))
         && data.cylinderId is string && isValidId(data.cylinderId)
         && data.cylinderCode is string && data.cylinderCode.size() >= 1 && data.cylinderCode.size() <= 20
         && data.movementType in ['restock', 'sale', 'return_empty', 'adjustment', 'cancel_restore']
@@ -136,8 +264,9 @@ service cloud.firestore {
 
     function isValidExpense(data) {
       return data.keys().hasAll(['ownerId', 'category', 'description', 'amount', 'createdAt'])
-        && data.keys().hasOnly(['ownerId', 'category', 'description', 'amount', 'createdAt', 'occurredAt'])
-        && data.ownerId is string && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.keys().hasOnly(['ownerId', 'memberEmails', 'category', 'description', 'amount', 'createdAt', 'occurredAt'])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && (!('memberEmails' in data) || isValidMemberEmails(data.memberEmails))
         && data.category in ['restock', 'fuel', 'maintenance', 'payroll', 'other']
         && data.description is string && data.description.size() >= 1 && data.description.size() <= 120
         && data.amount is number && data.amount > 0 && data.amount <= 100000000
@@ -146,124 +275,289 @@ service cloud.firestore {
     }
 
     match /depots/{depotId} {
-      allow get: if isValidId(depotId) && isDepotOwner(depotId) && (resource == null || existing().ownerId == request.auth.uid);
-      allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
-      allow create: if isValidId(depotId)
-        && isDepotOwner(depotId)
+      allow get: if isVerifiedUser()
+        && isValidId(depotId)
+        && (
+          resource == null
+            ? depotId == request.auth.uid
+            : (
+              depotId == request.auth.uid ||
+              existing().ownerId == request.auth.uid ||
+              (hasVerifiedEmail() && ('memberEmails' in existing()) && userEmail() in existing().memberEmails)
+            )
+        );
+      allow list: if canReadDoc(resource.data);
+      allow create: if isVerifiedUser()
+        && isValidId(depotId)
+        && depotId == request.auth.uid
         && isValidDepot(incoming())
+        && incoming().ownerId == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isValidId(depotId)
-        && isDepotOwner(depotId)
+      allow update: if isVerifiedUser()
+        && isValidId(depotId)
         && isValidDepot(incoming())
         && incoming().ownerId == existing().ownerId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'currency', 'deliveryFee', 'drivers', 'updatedAt']);
+        && (
+          (
+            (
+              depotId == request.auth.uid ||
+              existing().ownerId == request.auth.uid ||
+              (
+                hasVerifiedEmail()
+                && ('memberEmails' in existing())
+                && userEmail() in existing().memberEmails
+                && ('memberPermissions' in existing())
+                && (userEmail() in existing().memberPermissions)
+                && existing().memberPermissions[userEmail()] is map
+                && ('manageUsers' in existing().memberPermissions[userEmail()])
+                && existing().memberPermissions[userEmail()].manageUsers == true
+              )
+            )
+            && (
+              depotId == request.auth.uid ||
+              existing().ownerId == request.auth.uid ||
+              !('memberEmails' in existing()) ||
+              existing().memberEmails.size() == 0 ||
+              (('memberEmails' in incoming()) && existing().memberEmails[0] in incoming().memberEmails)
+            )
+            && incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails', 'memberPermissions', 'updatedAt'])
+          ) ||
+          (
+            (
+              depotId == request.auth.uid ||
+              existing().ownerId == request.auth.uid ||
+              (
+                hasVerifiedEmail()
+                && ('memberEmails' in existing())
+                && userEmail() in existing().memberEmails
+                && (
+                  !('memberPermissions' in existing()) ||
+                  !(userEmail() in existing().memberPermissions) ||
+                  (
+                    existing().memberPermissions[userEmail()] is map
+                    && ('manageSettings' in existing().memberPermissions[userEmail()])
+                    && existing().memberPermissions[userEmail()].manageSettings == true
+                  )
+                )
+              )
+            )
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'currency', 'deliveryFee', 'drivers', 'updatedAt'])
+          )
+        );
       allow delete: if false;
 
+      match /members/{memberId} {
+        allow get: if isVerifiedUser() && isValidId(depotId) && isValidId(memberId) && isParentDepotMember(depotId);
+        allow list: if canReadDoc(resource.data);
+        allow create: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(memberId)
+          && isValidDepotMember(incoming())
+          && incoming().ownerId == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && isDepotAdmin(depotId);
+        allow update: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(memberId)
+          && isValidDepotMember(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && isParentDepotMember(depotId)
+          && (
+            (
+              isDepotAdmin(depotId)
+              && (isDepotOwner(depotId) || !isProtectedOwnerEmail(depotId, existing().email))
+              && incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails', 'displayName', 'role', 'permissions', 'status', 'joinedUid', 'updatedAt'])
+            ) ||
+            (
+              isDepotAdmin(depotId)
+              && incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails', 'updatedAt'])
+            ) ||
+            (
+              hasVerifiedEmail()
+              && existing().email == userEmail()
+              && incoming().status == 'active'
+              && incoming().joinedUid == request.auth.uid
+              && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'joinedUid', 'displayName', 'updatedAt'])
+            )
+          );
+        allow delete: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(memberId)
+          && isDepotAdmin(depotId)
+          && (isDepotOwner(depotId) || !isProtectedOwnerEmail(depotId, existing().email));
+      }
+
       match /cylinders/{cylinderId} {
-        allow get: if isValidId(depotId) && isValidId(cylinderId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
-        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
-        allow create: if isValidId(depotId) && isValidId(cylinderId)
-          && isDepotOwner(depotId)
+        allow get: if isVerifiedUser() && isValidId(depotId) && isValidId(cylinderId) && isParentDepotMember(depotId);
+        allow list: if canReadDoc(resource.data);
+        allow create: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(cylinderId)
           && isValidCylinder(incoming())
-          && parentDepotOwned(depotId)
-          && incoming().updatedAt == request.time;
-        allow update: if isValidId(depotId) && isValidId(cylinderId)
-          && isDepotOwner(depotId)
+          && incoming().ownerId == request.auth.uid
+          && incoming().updatedAt == request.time
+          && (hasDepotPerm(depotId, 'manageInventory') || hasDepotPerm(depotId, 'manageSettings'));
+        allow update: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(cylinderId)
           && isValidCylinder(incoming())
-          && parentDepotOwned(depotId)
           && incoming().ownerId == existing().ownerId
           && incoming().updatedAt == request.time
           && (
-            incoming().diff(existing()).affectedKeys().hasOnly(['fullCount', 'emptyCount', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'weightKg', 'salePrice', 'shellPrice', 'costPrice', 'minStock', 'imageUrl', 'updatedAt'])
+            (
+              (hasDepotPerm(depotId, 'createSales') || hasDepotPerm(depotId, 'manageInventory') || hasDepotPerm(depotId, 'manageDeliveries'))
+              && incoming().diff(existing()).affectedKeys().hasOnly(['fullCount', 'emptyCount', 'updatedAt'])
+            ) ||
+            (
+              (hasDepotPerm(depotId, 'manageInventory') || hasDepotPerm(depotId, 'manageSettings'))
+              && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'code', 'weightKg', 'salePrice', 'shellPrice', 'costPrice', 'minStock', 'imageUrl', 'updatedAt'])
+            ) ||
+            (isDepotAdmin(depotId) && incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails', 'updatedAt']))
           );
-        allow delete: if isValidId(depotId) && isValidId(cylinderId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+        allow delete: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(cylinderId)
+          && (hasDepotPerm(depotId, 'manageInventory') || hasDepotPerm(depotId, 'manageSettings'));
       }
 
       match /customers/{customerId} {
-        allow get: if isValidId(depotId) && isValidId(customerId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
-        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
-        allow create: if isValidId(depotId) && isValidId(customerId)
-          && isDepotOwner(depotId)
+        allow get: if isVerifiedUser() && isValidId(depotId) && isValidId(customerId) && isParentDepotMember(depotId);
+        allow list: if canReadDoc(resource.data);
+        allow create: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(customerId)
           && isValidCustomer(incoming())
-          && parentDepotOwned(depotId)
+          && incoming().ownerId == request.auth.uid
           && incoming().createdAt == request.time
-          && incoming().updatedAt == request.time;
-        allow update: if isValidId(depotId) && isValidId(customerId)
-          && isDepotOwner(depotId)
+          && incoming().updatedAt == request.time
+          && hasDepotPerm(depotId, 'manageCustomers');
+        allow update: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(customerId)
           && isValidCustomer(incoming())
-          && parentDepotOwned(depotId)
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
           && (
-            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'address', 'neighborhood', 'notes', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['totalOrders', 'totalSpent', 'creditBalance', 'updatedAt']) ||
-            incoming().diff(existing()).affectedKeys().hasOnly(['creditBalance', 'updatedAt'])
+            (
+              hasDepotPerm(depotId, 'manageCustomers')
+              && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'address', 'neighborhood', 'notes', 'updatedAt'])
+            ) ||
+            (
+              (hasDepotPerm(depotId, 'createSales') || hasDepotPerm(depotId, 'manageCustomers'))
+              && incoming().diff(existing()).affectedKeys().hasOnly(['totalOrders', 'totalSpent', 'creditBalance', 'updatedAt'])
+            ) ||
+            (
+              (hasDepotPerm(depotId, 'manageCustomers') || hasDepotPerm(depotId, 'manageDeliveries') || hasDepotPerm(depotId, 'createSales'))
+              && incoming().diff(existing()).affectedKeys().hasOnly(['creditBalance', 'updatedAt'])
+            ) ||
+            (isDepotAdmin(depotId) && incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails', 'updatedAt']))
           );
-        allow delete: if isValidId(depotId) && isValidId(customerId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+        allow delete: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(customerId)
+          && hasDepotPerm(depotId, 'manageCustomers');
       }
 
       match /sales/{saleId} {
-        allow get: if isValidId(depotId) && isValidId(saleId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
-        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
-        allow create: if isValidId(depotId) && isValidId(saleId)
-          && isDepotOwner(depotId)
+        allow get: if isVerifiedUser() && isValidId(depotId) && isValidId(saleId) && isParentDepotMember(depotId);
+        allow list: if canReadDoc(resource.data);
+        allow create: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(saleId)
           && isValidSale(incoming())
-          && parentDepotOwned(depotId)
-          && exists(/databases/$(database)/documents/depots/$(depotId)/cylinders/$(incoming().cylinderId))
+          && incoming().ownerId == request.auth.uid
           && incoming().createdAt == request.time
-          && incoming().updatedAt == request.time;
-        allow update: if isValidId(depotId) && isValidId(saleId)
-          && isDepotOwner(depotId)
+          && incoming().updatedAt == request.time
+          && (hasDepotPerm(depotId, 'createSales') || hasDepotPerm(depotId, 'manageSettings') || hasDepotPerm(depotId, 'manageInventory'))
+          && exists(/databases/$(database)/documents/depots/$(depotId)/cylinders/$(incoming().cylinderId));
+        allow update: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(saleId)
           && isValidSale(incoming())
-          && parentDepotOwned(depotId)
           && incoming().ownerId == existing().ownerId
           && incoming().createdAt == existing().createdAt
           && incoming().updatedAt == request.time
-          && existing().deliveryStatus != 'cancelled'
           && (
+            (isDepotAdmin(depotId) && incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails', 'updatedAt'])) ||
             (
-              existing().deliveryStatus in ['pending', 'in_route']
-              && incoming().diff(existing()).affectedKeys().hasOnly(['deliveryStatus', 'driverName', 'paymentStatus', 'updatedAt'])
-            ) ||
-            (
-              existing().deliveryStatus == 'delivered'
-              && existing().paymentStatus == 'pending'
-              && incoming().deliveryStatus == 'delivered'
-              && incoming().paymentStatus == 'paid'
-              && incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'updatedAt'])
+              existing().deliveryStatus != 'cancelled'
+              && (
+                (
+                  existing().deliveryStatus in ['pending', 'in_route']
+                  && hasDepotPerm(depotId, 'manageDeliveries')
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['deliveryStatus', 'driverName', 'paymentStatus', 'updatedAt'])
+                ) ||
+                (
+                  existing().deliveryStatus == 'delivered'
+                  && existing().paymentStatus == 'pending'
+                  && incoming().deliveryStatus == 'delivered'
+                  && incoming().paymentStatus == 'paid'
+                  && (hasDepotPerm(depotId, 'manageDeliveries') || hasDepotPerm(depotId, 'manageCustomers'))
+                  && incoming().diff(existing()).affectedKeys().hasOnly(['paymentStatus', 'updatedAt'])
+                )
+              )
             )
           );
-        allow delete: if isValidId(depotId) && isValidId(saleId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+        allow delete: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(saleId)
+          && (hasDepotPerm(depotId, 'manageDeliveries') || hasDepotPerm(depotId, 'manageSettings') || hasDepotPerm(depotId, 'viewFinance'));
       }
 
       match /stockMovements/{movementId} {
-        allow get: if isValidId(depotId) && isValidId(movementId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
-        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
-        allow create: if isValidId(depotId) && isValidId(movementId)
-          && isDepotOwner(depotId)
+        allow get: if isVerifiedUser() && isValidId(depotId) && isValidId(movementId) && isParentDepotMember(depotId);
+        allow list: if canReadDoc(resource.data);
+        allow create: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(movementId)
           && isValidStockMovement(incoming())
-          && parentDepotOwned(depotId)
-          && exists(/databases/$(database)/documents/depots/$(depotId)/cylinders/$(incoming().cylinderId))
-          && incoming().createdAt == request.time;
-        allow update: if false;
-        allow delete: if isValidId(depotId) && isValidId(movementId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+          && incoming().ownerId == request.auth.uid
+          && incoming().createdAt == request.time
+          && (hasDepotPerm(depotId, 'createSales') || hasDepotPerm(depotId, 'manageInventory') || hasDepotPerm(depotId, 'manageDeliveries') || hasDepotPerm(depotId, 'manageSettings'))
+          && exists(/databases/$(database)/documents/depots/$(depotId)/cylinders/$(incoming().cylinderId));
+        allow update: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(movementId)
+          && isValidStockMovement(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && isDepotAdmin(depotId)
+          && incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails']);
+        allow delete: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(movementId)
+          && (hasDepotPerm(depotId, 'manageInventory') || hasDepotPerm(depotId, 'manageSettings'));
       }
 
       match /expenses/{expenseId} {
-        allow get: if isValidId(depotId) && isValidId(expenseId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
-        allow list: if isDepotOwner(depotId) && resource.data.ownerId == request.auth.uid;
-        allow create: if isValidId(depotId) && isValidId(expenseId)
-          && isDepotOwner(depotId)
+        allow get: if isVerifiedUser() && isValidId(depotId) && isValidId(expenseId) && isParentDepotMember(depotId);
+        allow list: if canReadDoc(resource.data);
+        allow create: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(expenseId)
           && isValidExpense(incoming())
-          && parentDepotOwned(depotId)
-          && incoming().createdAt == request.time;
-        allow update: if false;
-        allow delete: if isValidId(depotId) && isValidId(expenseId) && isDepotOwner(depotId) && parentDepotOwned(depotId);
+          && incoming().ownerId == request.auth.uid
+          && incoming().createdAt == request.time
+          && hasDepotPerm(depotId, 'manageExpenses');
+        allow update: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(expenseId)
+          && isValidExpense(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && isDepotAdmin(depotId)
+          && incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails']);
+        allow delete: if isVerifiedUser()
+          && isValidId(depotId)
+          && isValidId(expenseId)
+          && (hasDepotPerm(depotId, 'manageExpenses') || hasDepotPerm(depotId, 'manageSettings'));
       }
     }
   }

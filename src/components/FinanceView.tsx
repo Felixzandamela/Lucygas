@@ -8,6 +8,7 @@ import {
   EXPENSE_CATEGORY_LABELS,
   type ExpenseCategory,
   FIELD_LIMITS,
+  type MemberPermissions,
   PAYMENT_METHOD_LABELS,
   type PaymentMethod,
   type Sale,
@@ -20,11 +21,12 @@ interface FinanceViewProps {
   currency: CurrencyCode;
   sales: Sale[];
   expenses: Expense[];
+  permissions: MemberPermissions;
 }
 
 type PeriodFilter = 'today' | '7d' | '30d' | 'all';
 
-export function FinanceView({ uid, currency, sales, expenses }: FinanceViewProps) {
+export function FinanceView({ uid, currency, sales, expenses, permissions }: FinanceViewProps) {
   const [period, setPeriod] = useState<PeriodFilter>('30d');
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [category, setCategory] = useState<ExpenseCategory>('fuel');
@@ -165,14 +167,16 @@ export function FinanceView({ uid, currency, sales, expenses }: FinanceViewProps
             <Download className="w-3.5 h-3.5" />
             <span>Exportar CSV</span>
           </button>
-          <button
-            type="button"
-            onClick={() => setShowExpenseModal(true)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-orange-600 text-white text-xs font-semibold hover:bg-slate-800 dark:hover:bg-orange-700 whitespace-nowrap cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Registrar Despesa</span>
-          </button>
+          {permissions.manageExpenses && (
+            <button
+              type="button"
+              onClick={() => setShowExpenseModal(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-orange-600 text-white text-xs font-semibold hover:bg-slate-800 dark:hover:bg-orange-700 whitespace-nowrap cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Registrar Despesa</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -335,14 +339,16 @@ export function FinanceView({ uid, currency, sales, expenses }: FinanceViewProps
                         - {formatCurrency(exp.amount, currency)}
                       </td>
                       <td className="py-2.5 px-4 text-right">
-                        <button
-                          type="button"
-                          onClick={() => removeExpense(uid, exp.id)}
-                          title="Excluir despesa"
-                          className="p-1.5 rounded text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {permissions.manageExpenses && (
+                          <button
+                            type="button"
+                            onClick={() => removeExpense(uid, exp.id)}
+                            title="Excluir despesa"
+                            className="p-1.5 rounded text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}

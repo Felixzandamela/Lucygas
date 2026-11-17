@@ -2,14 +2,17 @@ import {
   AlertTriangle,
   BellOff,
   BellRing,
+  Boxes,
   CheckCircle2,
   History,
   Monitor,
   Moon,
   Plus,
   Send,
+  Settings as SettingsIcon,
   Sun,
   Trash2,
+  Users,
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
@@ -25,20 +28,31 @@ import {
   type CurrencyCode,
   type Cylinder,
   type Depot,
+  type DepotMember,
   type Expense,
   FIELD_LIMITS,
+  type MemberPermissions,
   type Sale,
   type StockMovement,
 } from '../types/gas';
 import { getHistoricalDraftKey, HistoricalLedgerModal } from './HistoricalLedgerModal';
+import { UserManagementTab } from './UserManagementTab';
+
+type SettingsTab = 'general' | 'stock_history' | 'users';
 
 interface SettingsViewProps {
   uid: string;
+  currentUserUid: string;
+  currentUserEmail: string;
+  availableDepots: Depot[];
+  onSwitchDepot: (depotId: string) => void;
   depot: Depot | null;
   cylinders: Cylinder[];
   sales: Sale[];
   movements: StockMovement[];
   expenses: Expense[];
+  members: DepotMember[];
+  permissions: MemberPermissions;
   pushControls?: {
     permission: PushPermissionState;
     prefs: PushNotificationPrefs;
@@ -79,14 +93,27 @@ const THEME_OPTIONS: {
 
 export function SettingsView({
   uid,
+  currentUserUid,
+  currentUserEmail,
+  availableDepots,
+  onSwitchDepot,
   depot,
   cylinders,
   sales,
   movements,
   expenses,
+  members,
+  permissions,
   pushControls,
 }: SettingsViewProps) {
   const { theme, setTheme } = useTheme();
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
+    if (typeof window === 'undefined') return 'general';
+    const saved = window.sessionStorage.getItem('lucygas_settings_tab') as SettingsTab | null;
+    return saved === 'general' || saved === 'stock_history' || saved === 'users'
+      ? saved
+      : 'general';
+  });
   const [name, setName] = useState('');
   const [currency, setCurrency] = useState<CurrencyCode>('BRL');
   const [deliveryFee, setDeliveryFee] = useState<number>(8);
@@ -110,6 +137,13 @@ export function SettingsView({
   const [confirmDiscardRecent, setConfirmDiscardRecent] = useState(false);
   const [discardingRecent, setDiscardingRecent] = useState(false);
   const [dataNotice, setDataNotice] = useState<string | null>(null);
+
+  const handleSelectTab = (tab: SettingsTab) => {
+    setActiveTab(tab);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem('lucygas_settings_tab', tab);
+    }
+  };
 
   const openHistoricalModal = () => {
     setShowHistoricalModal(true);
@@ -241,9 +275,69 @@ export function SettingsView({
     }
   };
 
+  const canEditSettings = permissions.manageSettings;
+  const canEditStockHistory = permissions.manageSettings || permissions.manageInventory;
+  const canManageUsers = Boolean(
+    (depot && depot.ownerId === currentUserUid) || permissions.manageUsers
+  );
+
+  const effectiveTab: SettingsTab =
+    activeTab === 'stock_history' && !canEditStockHistory ? 'general' : activeTab;
+
+  const tabs: { id: SettingsTab; label: string; icon: typeof SettingsIcon; visible: boolean }[] = [
+    { id: 'general', label: 'Geral e Operação', icon: SettingsIcon, visible: true },
+    { id: 'stock_history', label: 'Estoque e Histórico', icon: Boxes, visible: canEditStockHistory },
+    { id: 'users', label: 'Gestão de Usuários', icon: Users, visible: true },
+  ];
+
   return (
-    <div className="max-w-3xl space-y-8">
+    <div className="max-w-4xl space-y-6">
+      {/* Settings Sub-Navigation Tabs */}
+      <div
+        className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-1.5 flex items-center gap-1 overflow-x-auto"
+        role="tablist"
+        aria-label="Abas de configurações"
+      >
+        {tabs
+          .filter((t) => t.visible)
+          .map((tab) => {
+            const Icon = tab.icon;
+            const active = effectiveTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => handleSelectTab(tab.id)}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  active
+                    ? 'bg-slate-900 dark:bg-orange-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <Icon className="w-4 h-4 shrink-0" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+      </div>
+
+      {effectiveTab === 'users' && (
+        <UserManagementTab
+          depotId={uid}
+          depot={depot}
+          members={members}
+          currentUserUid={currentUserUid}
+          currentUserEmail={currentUserEmail}
+          canManageUsers={canManageUsers}
+          availableDepots={availableDepots}
+          onSwitchDepot={onSwitchDepot}
+        />
+      )}
+
       {/* Historical Correction & Ledger Reconstruction */}
+      {effectiveTab === 'stock_history' && canEditStockHistory && (
       <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-4">
         <div className="pb-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -301,8 +395,10 @@ export function SettingsView({
           </button>
         </div>
       </section>
+      )}
 
       {/* Appearance & Theme Selector */}
+      {effectiveTab === 'general' && (
       <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-4">
         <div className="pb-4 border-b border-slate-100 dark:border-slate-800">
           <h2 className="font-display text-base font-semibold text-slate-900 dark:text-slate-100">
@@ -355,14 +451,16 @@ export function SettingsView({
           })}
         </div>
       </section>
+      )}
 
-      {savedNotice && (
+      {effectiveTab === 'general' && canEditSettings && savedNotice && (
         <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 rounded-xl p-4 flex items-center gap-3 text-sm text-emerald-900 dark:text-emerald-200">
           <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
           <span>Configurações da distribuidora atualizadas com sucesso.</span>
         </div>
       )}
 
+      {effectiveTab === 'general' && canEditSettings && (
       <form
         onSubmit={handleSubmit}
         className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-6"
@@ -482,15 +580,17 @@ export function SettingsView({
           </button>
         </div>
       </form>
+      )}
 
       {/* Minimum Stock Thresholds per Cylinder Type */}
-      {savedMinStockNotice && (
+      {effectiveTab === 'stock_history' && canEditStockHistory && savedMinStockNotice && (
         <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 rounded-xl p-4 flex items-center gap-3 text-sm text-emerald-900 dark:text-emerald-200">
           <CheckCircle2 className="w-4 h-4 text-emerald-700 dark:text-emerald-400 shrink-0" />
           <span>Limites de estoque mínimo por botijão salvos com sucesso.</span>
         </div>
       )}
 
+      {effectiveTab === 'stock_history' && canEditStockHistory && (
       <form
         onSubmit={handleMinStockSubmit}
         className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5"
@@ -584,9 +684,10 @@ export function SettingsView({
           </button>
         </div>
       </form>
+      )}
 
       {/* PWA Push Notifications Settings */}
-      {pushControls && (
+      {effectiveTab === 'general' && pushControls && (
         <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5">
           <div className="pb-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4">
             <div>

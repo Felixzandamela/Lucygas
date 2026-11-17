@@ -41,9 +41,29 @@ const NAV_ITEMS: { id: AppSection; label: string; icon: typeof LayoutDashboard }
 ];
 
 function WorkspaceShell() {
-  const { user, authReady, depotReady, authError, logout } = useAuth();
-  const { depot, cylinders, customers, sales, movements, expenses, loading, hasPendingWrites, error } =
-    useDepotData();
+  const {
+    user,
+    authReady,
+    depotReady,
+    activeDepotId,
+    availableDepots,
+    switchDepot,
+    authError,
+    logout,
+  } = useAuth();
+  const {
+    depot,
+    cylinders,
+    customers,
+    sales,
+    movements,
+    expenses,
+    members,
+    permissions,
+    loading,
+    hasPendingWrites,
+    error,
+  } = useDepotData();
   const push = usePushNotifications({
     uid: user?.uid,
     loading,
@@ -111,8 +131,23 @@ function WorkspaceShell() {
     return <SignInScreen />;
   }
 
-  const currentNav = NAV_ITEMS.find((item) => item.id === activeSection) ?? NAV_ITEMS[0];
+  const visibleNavItems = NAV_ITEMS.filter((item) => {
+    if (item.id === 'dashboard') return permissions.viewDashboard;
+    if (item.id === 'pos') return permissions.createSales;
+    if (item.id === 'sales') return permissions.viewSales;
+    if (item.id === 'inventory') return permissions.viewInventory;
+    if (item.id === 'customers') return permissions.viewCustomers;
+    if (item.id === 'finance') return permissions.viewFinance;
+    return true;
+  });
+
+  const resolvedSection: AppSection = visibleNavItems.some((item) => item.id === activeSection)
+    ? activeSection
+    : (visibleNavItems[0]?.id ?? 'settings');
+
+  const currentNav = visibleNavItems.find((item) => item.id === resolvedSection) ?? visibleNavItems[0] ?? NAV_ITEMS[6];
   const currency = depot?.currency ?? 'BRL';
+  const depotId = activeDepotId ?? user.uid;
 
   const handleSelectNav = (id: AppSection) => {
     setActiveSection(id);
@@ -123,6 +158,7 @@ function WorkspaceShell() {
   };
 
   const handleStartSaleForCustomer = (customerId: string) => {
+    if (!permissions.createSales) return;
     setPreselectedCustomerId(customerId);
     setActiveSection('pos');
   };
@@ -141,9 +177,9 @@ function WorkspaceShell() {
         </div>
 
         <nav className="flex-1 px-3 py-5 space-y-1 overflow-y-auto" aria-label="Navegação principal">
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
-            const active = activeSection === item.id;
+            const active = resolvedSection === item.id;
             return (
               <button
                 key={item.id}
@@ -205,9 +241,9 @@ function WorkspaceShell() {
             </div>
 
             <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-              {NAV_ITEMS.map((item) => {
+              {visibleNavItems.map((item) => {
                 const Icon = item.icon;
-                const active = activeSection === item.id;
+                const active = resolvedSection === item.id;
                 return (
                   <button
                     key={item.id}
@@ -288,10 +324,10 @@ function WorkspaceShell() {
               onNavigate={setActiveSection}
             />
             <PWAInstallButton />
-            {activeSection !== 'pos' && (
+            {permissions.createSales && resolvedSection !== 'pos' && (
               <button
                 type="button"
-                onClick={() => setActiveSection('pos')}
+                onClick={() => handleSelectNav('pos')}
                 className="inline-flex items-center gap-1.5 px-3 sm:px-4 py-2 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -325,31 +361,32 @@ function WorkspaceShell() {
             </div>
           ) : (
             <>
-              {activeSection === 'dashboard' && (
+              {resolvedSection === 'dashboard' && permissions.viewDashboard && (
                 <DashboardView
-                  uid={user.uid}
+                  uid={depotId}
                   currency={currency}
                   cylinders={cylinders}
                   sales={sales}
                   customers={customers}
-                  onNavigate={setActiveSection}
+                  permissions={permissions}
+                  onNavigate={handleSelectNav}
                 />
               )}
-              {activeSection === 'pos' && (
+              {resolvedSection === 'pos' && permissions.createSales && (
                 <PosView
-                  uid={user.uid}
+                  uid={depotId}
                   depot={depot}
                   currency={currency}
                   cylinders={cylinders}
                   customers={customers}
                   preselectedCustomerId={preselectedCustomerId}
                   onClearPreselectedCustomer={() => setPreselectedCustomerId(null)}
-                  onNavigate={setActiveSection}
+                  onNavigate={handleSelectNav}
                 />
               )}
-              {activeSection === 'sales' && (
+              {resolvedSection === 'sales' && permissions.viewSales && (
                 <SalesView
-                  uid={user.uid}
+                  uid={depotId}
                   depotName={depot?.name}
                   currency={currency}
                   sales={sales}
@@ -357,41 +394,51 @@ function WorkspaceShell() {
                   customers={customers}
                   expenses={expenses}
                   drivers={depot?.drivers ?? []}
+                  permissions={permissions}
                 />
               )}
-              {activeSection === 'inventory' && (
+              {resolvedSection === 'inventory' && permissions.viewInventory && (
                 <InventoryView
-                  uid={user.uid}
+                  uid={depotId}
                   currency={currency}
                   cylinders={cylinders}
                   movements={movements}
-                  onNavigate={setActiveSection}
+                  permissions={permissions}
+                  onNavigate={handleSelectNav}
                 />
               )}
-              {activeSection === 'customers' && (
+              {resolvedSection === 'customers' && permissions.viewCustomers && (
                 <CustomersView
-                  uid={user.uid}
+                  uid={depotId}
                   currency={currency}
                   customers={customers}
+                  permissions={permissions}
                   onStartSaleForCustomer={handleStartSaleForCustomer}
                 />
               )}
-              {activeSection === 'finance' && (
+              {resolvedSection === 'finance' && permissions.viewFinance && (
                 <FinanceView
-                  uid={user.uid}
+                  uid={depotId}
                   currency={currency}
                   sales={sales}
                   expenses={expenses}
+                  permissions={permissions}
                 />
               )}
-              {activeSection === 'settings' && (
+              {resolvedSection === 'settings' && (
                 <SettingsView
-                  uid={user.uid}
+                  uid={depotId}
+                  currentUserUid={user.uid}
+                  currentUserEmail={user.email ?? ''}
+                  availableDepots={availableDepots}
+                  onSwitchDepot={switchDepot}
                   depot={depot}
                   cylinders={cylinders}
                   sales={sales}
                   movements={movements}
                   expenses={expenses}
+                  members={members}
+                  permissions={permissions}
                   pushControls={{
                     permission: push.permission,
                     prefs: push.prefs,

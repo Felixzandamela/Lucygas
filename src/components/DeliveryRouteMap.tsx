@@ -16,6 +16,7 @@ interface DeliveryRouteMapProps {
   busyId: string | null;
   onStatusChange: (sale: Sale, nextStatus: DeliveryStatus, driverOverride?: string) => Promise<void>;
   onSelectSale: (sale: Sale) => void;
+  canManageDeliveries?: boolean;
 }
 
 interface ZoneCluster {
@@ -103,6 +104,7 @@ export function DeliveryRouteMap({
   busyId,
   onStatusChange,
   onSelectSale,
+  canManageDeliveries = true,
 }: DeliveryRouteMapProps) {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
@@ -229,7 +231,7 @@ export function DeliveryRouteMap({
   const activeZone = zones.find((z) => z.key === selectedZoneKey) ?? zones[0] ?? null;
 
   const handleDispatchZone = async (zone: ZoneCluster) => {
-    if (zone.pendingSales.length === 0) return;
+    if (!canManageDeliveries || zone.pendingSales.length === 0) return;
     setDispatchingZone(true);
     try {
       await dispatchSalesRouteBatch(uid, zone.pendingSales, batchDriver);
@@ -623,7 +625,7 @@ export function DeliveryRouteMap({
                   </div>
 
                   {/* Batch Dispatch Bar for Pending Orders in Zone */}
-                  {activeZone.pendingSales.length > 0 && (
+                  {canManageDeliveries && activeZone.pendingSales.length > 0 && (
                     <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center gap-2">
                       <select
                         aria-label="Selecionar entregador para o grupo"
@@ -700,7 +702,7 @@ export function DeliveryRouteMap({
                         </div>
 
                         <div className="inline-flex items-center gap-1.5">
-                          {sale.deliveryStatus === 'pending' && (
+                          {canManageDeliveries && sale.deliveryStatus === 'pending' && (
                             <button
                               type="button"
                               disabled={busyId === sale.id}
@@ -711,7 +713,7 @@ export function DeliveryRouteMap({
                               <span>Despachar</span>
                             </button>
                           )}
-                          {sale.deliveryStatus === 'in_route' && (
+                          {canManageDeliveries && sale.deliveryStatus === 'in_route' && (
                             <button
                               type="button"
                               disabled={busyId === sale.id}

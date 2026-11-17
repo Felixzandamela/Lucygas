@@ -1,9 +1,24 @@
 import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { getRecordMillis } from '../lib/formatters';
-import type { Customer, Cylinder, Depot, Expense, Sale, StockMovement } from '../types/gas';
+import {
+  activateSelfMemberRecord,
+  normalizeEmail,
+  setDepotMemberEmailsContext,
+} from '../services/depotService';
+import {
+  type Customer,
+  type Cylinder,
+  type Depot,
+  type DepotMember,
+  type Expense,
+  type MemberPermissions,
+  resolveEffectivePermissions,
+  type Sale,
+  type StockMovement,
+} from '../types/gas';
 
 export interface DepotDataState {
   depot: Depot | null;
@@ -12,44 +27,50 @@ export interface DepotDataState {
   sales: Sale[];
   movements: StockMovement[];
   expenses: Expense[];
+  members: DepotMember[];
+  permissions: MemberPermissions;
   loading: boolean;
   hasPendingWrites: boolean;
   error: string | null;
 }
 
+const INITIAL_FLAGS = {
+  depot: false,
+  cylinders: false,
+  customers: false,
+  sales: false,
+  movements: false,
+  expenses: false,
+  members: false,
+};
+
 export function useDepotData(): DepotDataState {
-  const { user, authReady, depotReady } = useAuth();
+  const { user, authReady, depotReady, activeDepotId } = useAuth();
   const [depot, setDepot] = useState<Depot | null>(null);
   const [cylinders, setCylinders] = useState<Cylinder[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [loadedFlags, setLoadedFlags] = useState({
-    depot: false,
-    cylinders: false,
-    customers: false,
-    sales: false,
-    movements: false,
-    expenses: false,
-  });
-  const [pendingFlags, setPendingFlags] = useState({
-    depot: false,
-    cylinders: false,
-    customers: false,
-    sales: false,
-    movements: false,
-    expenses: false,
-  });
+  const [members, setMembers] = useState<DepotMember[]>([]);
+  const [loadedFlags, setLoadedFlags] = useState(INITIAL_FLAGS);
+  const [pendingFlags, setPendingFlags] = useState(INITIAL_FLAGS);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!authReady || !depotReady || !user) {
+    if (!authReady || !depotReady || !user || !activeDepotId) {
       return;
     }
 
-    const uid = user.uid;
+    const depotId = activeDepotId;
+    const userEmail = normalizeEmail(user.email);
+    const accessFilter = userEmail
+      ? where('memberEmails', 'array-contains', userEmail)
+      : where('ownerId', '==', user.uid);
+
     setError(null);
+    setLoadedFlags(INITIAL_FLAGS);
+    setPendingFlags(INITIAL_FLAGS);
 
     const markLoaded = (key: keyof typeof loadedFlags, pending: boolean) => {
       setLoadedFlags((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
@@ -57,24 +78,26 @@ export function useDepotData(): DepotDataState {
     };
 
     const unsubDepot = onSnapshot(
-      doc(db, 'depots', uid),
+      doc(db, 'depots', depotId),
       (snap) => {
         if (snap.exists()) {
-          setDepot({
+          const data = {
             id: snap.id,
             ...(snap.data({ serverTimestamps: 'estimate' }) as Omit<Depot, 'id'>),
-          });
+          };
+          setDepotMemberEmailsContext(depotId, data.memberEmails);
+          setDepot(data);
         }
         markLoaded('depot', snap.metadata.hasPendingWrites);
       },
       (err) => {
         setError(err.message);
-        handleFirestoreError(err, OperationType.GET, `depots/${uid}`);
+        handleFirestoreError(err, OperationType.GET, `depots/${depotId}`);
       }
     );
 
     const unsubCylinders = onSnapshot(
-      query(collection(db, 'depots', uid, 'cylinders'), where('ownerId', '==', uid)),
+      query(collection(db, 'depots', depotId, 'cylinders'), accessFilter),
       (snap) => {
         const items = snap.docs
           .map((d) => ({
@@ -87,12 +110,12 @@ export function useDepotData(): DepotDataState {
       },
       (err) => {
         setError(err.message);
-        handleFirestoreError(err, OperationType.LIST, `depots/${uid}/cylinders`);
+        handleFirestoreError(err, OperationType.LIST, `depots/${depotId}/cylinders`);
       }
     );
 
     const unsubCustomers = onSnapshot(
-      query(collection(db, 'depots', uid, 'customers'), where('ownerId', '==', uid)),
+      query(collection(db, 'depots', depotId, 'customers'), accessFilter),
       (snap) => {
         const items = snap.docs
           .map((d) => ({
@@ -105,12 +128,12 @@ export function useDepotData(): DepotDataState {
       },
       (err) => {
         setError(err.message);
-        handleFirestoreError(err, OperationType.LIST, `depots/${uid}/customers`);
+        handleFirestoreError(err, OperationType.LIST, `depots/${depotId}/customers`);
       }
     );
 
     const unsubSales = onSnapshot(
-      query(collection(db, 'depots', uid, 'sales'), where('ownerId', '==', uid)),
+      query(collection(db, 'depots', depotId, 'sales'), accessFilter),
       (snap) => {
         const items = snap.docs
           .map((d) => ({
@@ -123,12 +146,12 @@ export function useDepotData(): DepotDataState {
       },
       (err) => {
         setError(err.message);
-        handleFirestoreError(err, OperationType.LIST, `depots/${uid}/sales`);
+        handleFirestoreError(err, OperationType.LIST, `depots/${depotId}/sales`);
       }
     );
 
     const unsubMovements = onSnapshot(
-      query(collection(db, 'depots', uid, 'stockMovements'), where('ownerId', '==', uid)),
+      query(collection(db, 'depots', depotId, 'stockMovements'), accessFilter),
       (snap) => {
         const items = snap.docs
           .map((d) => ({
@@ -141,12 +164,12 @@ export function useDepotData(): DepotDataState {
       },
       (err) => {
         setError(err.message);
-        handleFirestoreError(err, OperationType.LIST, `depots/${uid}/stockMovements`);
+        handleFirestoreError(err, OperationType.LIST, `depots/${depotId}/stockMovements`);
       }
     );
 
     const unsubExpenses = onSnapshot(
-      query(collection(db, 'depots', uid, 'expenses'), where('ownerId', '==', uid)),
+      query(collection(db, 'depots', depotId, 'expenses'), accessFilter),
       (snap) => {
         const items = snap.docs
           .map((d) => ({
@@ -159,7 +182,34 @@ export function useDepotData(): DepotDataState {
       },
       (err) => {
         setError(err.message);
-        handleFirestoreError(err, OperationType.LIST, `depots/${uid}/expenses`);
+        handleFirestoreError(err, OperationType.LIST, `depots/${depotId}/expenses`);
+      }
+    );
+
+    const unsubMembers = onSnapshot(
+      query(collection(db, 'depots', depotId, 'members'), accessFilter),
+      (snap) => {
+        const items = snap.docs
+          .map((d) => ({
+            id: d.id,
+            ...(d.data({ serverTimestamps: 'estimate' }) as Omit<DepotMember, 'id'>),
+          }))
+          .sort((a, b) => a.email.localeCompare(b.email, 'pt-BR'));
+        setMembers(items);
+        markLoaded('members', snap.metadata.hasPendingWrites);
+        if (userEmail) {
+          void activateSelfMemberRecord(
+            depotId,
+            user.uid,
+            userEmail,
+            user.displayName || '',
+            items
+          );
+        }
+      },
+      (err) => {
+        setError(err.message);
+        handleFirestoreError(err, OperationType.LIST, `depots/${depotId}/members`);
       }
     );
 
@@ -170,12 +220,19 @@ export function useDepotData(): DepotDataState {
       unsubSales();
       unsubMovements();
       unsubExpenses();
+      unsubMembers();
     };
-  }, [user, authReady, depotReady]);
+  }, [user, authReady, depotReady, activeDepotId]);
+
+  const permissions = useMemo(
+    () => resolveEffectivePermissions(depot, user?.uid ?? '', user?.email ?? ''),
+    [depot, user?.uid, user?.email]
+  );
 
   const loading =
     !authReady ||
     !depotReady ||
+    !activeDepotId ||
     !loadedFlags.depot ||
     !loadedFlags.cylinders ||
     !loadedFlags.customers ||
@@ -190,6 +247,8 @@ export function useDepotData(): DepotDataState {
     sales,
     movements,
     expenses,
+    members,
+    permissions,
     loading,
     hasPendingWrites,
     error,

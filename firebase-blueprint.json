@@ -11,6 +11,14 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "memberEmails": {
+          "type": "array",
+          "description": "Authorized lowercase member emails with shared read/write access to this depot."
+        },
+        "memberPermissions": {
+          "type": "object",
+          "description": "Map of lowercase member email to granular module permissions enforced centrally."
+        },
         "name": {
           "type": "string",
           "minLength": 1,
@@ -47,6 +55,10 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "memberEmails": {
+          "type": "array",
+          "description": "Authorized lowercase member emails with shared depot access."
         },
         "code": {
           "type": "string",
@@ -101,6 +113,10 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "memberEmails": {
+          "type": "array",
+          "description": "Authorized lowercase member emails with shared depot access."
+        },
         "name": {
           "type": "string",
           "minLength": 1,
@@ -152,6 +168,10 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "memberEmails": {
+          "type": "array",
+          "description": "Authorized lowercase member emails with shared depot access."
         },
         "orderNumber": {
           "type": "string",
@@ -282,6 +302,10 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "memberEmails": {
+          "type": "array",
+          "description": "Authorized lowercase member emails with shared depot access."
+        },
         "cylinderId": {
           "type": "string",
           "minLength": 1,
@@ -329,6 +353,10 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "memberEmails": {
+          "type": "array",
+          "description": "Authorized lowercase member emails with shared depot access."
+        },
         "category": {
           "type": "string",
           "enum": ["restock", "fuel", "maintenance", "payroll", "other"]
@@ -351,12 +379,71 @@
         }
       },
       "required": ["ownerId", "category", "description", "amount", "createdAt"]
+    },
+    "DepotMember": {
+      "title": "DepotMember",
+      "description": "Invited or active collaborator profile, role preset, and granular permissions for a shared depot.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "memberEmails": {
+          "type": "array",
+          "description": "Synchronized member email list for collection queries."
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "manager", "seller", "driver", "inventory", "custom"]
+        },
+        "permissions": {
+          "type": "object",
+          "description": "Granular capability flags for this collaborator."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["invited", "active"]
+        },
+        "joinedUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "invitedByEmail": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "memberEmails", "email", "displayName", "role", "permissions", "status", "joinedUid", "invitedByEmail", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
     "/depots/{depotId}": {
       "schema": { "$ref": "#/entities/Depot" },
       "description": "Depot settings and metadata owned by the authenticated distributor."
+    },
+    "/depots/{depotId}/members/{memberId}": {
+      "schema": { "$ref": "#/entities/DepotMember" },
+      "description": "Centralized user invitations, roles, and granular permissions per collaborator."
     },
     "/depots/{depotId}/cylinders/{cylinderId}": {
       "schema": { "$ref": "#/entities/Cylinder" },

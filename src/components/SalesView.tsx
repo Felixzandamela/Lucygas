@@ -11,6 +11,7 @@ import {
   DELIVERY_STATUS_LABELS,
   type DeliveryStatus,
   type Expense,
+  type MemberPermissions,
   PAYMENT_METHOD_LABELS,
   type Sale,
 } from '../types/gas';
@@ -29,6 +30,7 @@ interface SalesViewProps {
   customers: Customer[];
   expenses?: Expense[];
   drivers: string[];
+  permissions: MemberPermissions;
 }
 
 function toInputDate(d: Date): string {
@@ -47,6 +49,7 @@ export function SalesView({
   customers,
   expenses = [],
   drivers,
+  permissions,
 }: SalesViewProps) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | DeliveryStatus>('all');
@@ -441,52 +444,78 @@ export function SalesView({
     const includeExpenses = !hasNarrowFilter && periodExpenses > 0;
     if (activeSales.length === 0 && !includeExpenses) return;
 
-    interface DailyGroup {
-      dateKey: string;
-      orders: number;
-      units: number;
-      revenue: number;
-      cost: number;
-      profit: number;
-      expenses: number;
+    const getCylinderSortWeight = (code: string, weightKg?: number): number => {
+      const upper = code.trim().toUpperCase();
+      const prefix = upper.charAt(0);
+      const tier = prefix === 'P' ? 1 : prefix === 'M' ? 2 : prefix === 'G' ? 3 : 4;
+      const numMatch = upper.match(/\d+/);
+      const num = weightKg && weightKg > 0 ? weightKg : numMatch ? Number(numMatch[0]) : 999;
+      return tier * 10000 + num;
+    };
+
+    const cylinderSortMap = new Map<string, number>();
+    for (const cyl of cylinders) {
+      const code = cyl.code.trim().toUpperCase();
+      if (code) {
+        cylinderSortMap.set(code, getCylinderSortWeight(code, cyl.weightKg));
+      }
+    }
+    for (const s of activeSales) {
+      const code = s.cylinderCode.trim().toUpperCase();
+      if (code && !cylinderSortMap.has(code)) {
+        cylinderSortMap.set(code, getCylinderSortWeight(code));
+      }
     }
 
-    const dailyMap = new Map<string, DailyGroup>();
-    const ensureDay = (dateKey: string): DailyGroup => {
+    const cylinderCodes = Array.from(cylinderSortMap.keys()).sort(
+      (a, b) => (cylinderSortMap.get(a)! - cylinderSortMap.get(b)!) || a.localeCompare(b)
+    );
+
+    interface DailyProfitGroup {
+      dateKey: string;
+      profitByCode: Record<string, number>;
+      unitsByCode: Record<string, number>;
+      dailyTotalProfit: number;
+    }
+
+    const dailyMap = new Map<string, DailyProfitGroup>();
+    const ensureDay = (dateKey: string): DailyProfitGroup => {
       let existing = dailyMap.get(dateKey);
       if (!existing) {
         existing = {
           dateKey,
-          orders: 0,
-          units: 0,
-          revenue: 0,
-          cost: 0,
-          profit: 0,
-          expenses: 0,
+          profitByCode: {},
+          unitsByCode: {},
+          dailyTotalProfit: 0,
         };
         dailyMap.set(dateKey, existing);
       }
       return existing;
     };
 
+    const totalProfitByCode: Record<string, number> = {};
+    for (const code of cylinderCodes) {
+      totalProfitByCode[code] = 0;
+    }
+
     for (const s of activeSales) {
       const dateKey = toInputDate(getRecordDate(s));
       const day = ensureDay(dateKey);
-      const cost = getSaleCost(s);
-      day.orders += 1;
-      day.units += s.quantity;
-      day.revenue += s.totalAmount;
-      day.cost += cost;
-      day.profit += s.totalAmount - cost;
+      const code = s.cylinderCode.trim().toUpperCase();
+      const profit = getSaleProfit(s);
+
+      day.profitByCode[code] = (day.profitByCode[code] ?? 0) + profit;
+      day.unitsByCode[code] = (day.unitsByCode[code] ?? 0) + s.quantity;
+      day.dailyTotalProfit += profit;
+
+      totalProfitByCode[code] = (totalProfitByCode[code] ?? 0) + profit;
     }
 
-    if (includeExpenses) {
+    if (activeSales.length === 0 && includeExpenses) {
       for (const exp of expenses) {
         const ms = getRecordMillis(exp);
         if (ms < dateBounds.start || ms > dateBounds.end) continue;
-        const dateKey = toInputDate(getRecordDate(exp));
-        const day = ensureDay(dateKey);
-        day.expenses += exp.amount;
+        ensureDay(toInputDate(getRecordDate(exp)));
       }
     }
 
@@ -496,7 +525,7 @@ export function SalesView({
     if (sortedDays.length === 0) return;
 
     const doc = new jsPDF({
-      orientation: 'portrait',
+      orientation: cylinderCodes.length > 4 ? 'landscape' : 'portrait',
       unit: 'mm',
       format: 'a4',
     });
@@ -572,52 +601,38 @@ export function SalesView({
       return `${formatBrDate(iso)} (${wd})`;
     };
 
-    const headRow = includeExpenses
-      ? [['Data', 'Ped.', 'Bot.', 'Bruto', 'Custo', 'Lucro Bot.', 'Despesas', 'Líquido']]
-      : [['Data', 'Pedidos', 'Botijões', 'Valor Bruto', 'Custo (CMV)', 'Lucro Estimado']];
+    const headRow = [
+      ['Data', ...cylinderCodes.map((code) => `Lucro de ${code}`), 'Total diário'],
+    ];
 
-    const bodyRows = sortedDays.map((day) => {
-      const base = [
-        formatDateWithDay(day.dateKey),
-        String(day.orders),
-        String(day.units),
-        formatCurrency(day.revenue, currency),
-        formatCurrency(day.cost, currency),
-        formatCurrency(day.profit, currency),
-      ];
-      if (includeExpenses) {
-        const net = day.profit - day.expenses;
-        base.push(
-          day.expenses > 0 ? formatCurrency(day.expenses, currency) : '—',
-          formatCurrency(net, currency)
-        );
-      }
-      return base;
+    const bodyRows = sortedDays.map((day) => [
+      formatDateWithDay(day.dateKey),
+      ...cylinderCodes.map((code) =>
+        (day.unitsByCode[code] ?? 0) > 0
+          ? formatCurrency(day.profitByCode[code] ?? 0, currency)
+          : '—'
+      ),
+      formatCurrency(day.dailyTotalProfit, currency),
+    ]);
+
+    const footRow = [
+      [
+        `Total (${sortedDays.length} dias)`,
+        ...cylinderCodes.map((code) => formatCurrency(totalProfitByCode[code] ?? 0, currency)),
+        formatCurrency(filteredSummary.cylindersProfit, currency),
+      ],
+    ];
+
+    const dynamicColumnStyles: Record<
+      number,
+      { halign?: 'left' | 'right' | 'center'; cellWidth?: number; fontStyle?: 'bold' | 'normal' }
+    > = {
+      0: { cellWidth: 34, halign: 'left' },
+    };
+    cylinderCodes.forEach((_, idx) => {
+      dynamicColumnStyles[idx + 1] = { halign: 'right' };
     });
-
-    const footRow = includeExpenses
-      ? [
-          [
-            `Total (${sortedDays.length} dias)`,
-            String(filteredSummary.activeCount),
-            String(filteredSummary.totalUnits),
-            formatCurrency(filteredSummary.totalValue, currency),
-            formatCurrency(filteredSummary.totalCost, currency),
-            formatCurrency(filteredSummary.cylindersProfit, currency),
-            formatCurrency(periodExpenses, currency),
-            formatCurrency(filteredSummary.estimatedNetResult, currency),
-          ],
-        ]
-      : [
-          [
-            `Total (${sortedDays.length} dias)`,
-            String(filteredSummary.activeCount),
-            String(filteredSummary.totalUnits),
-            formatCurrency(filteredSummary.totalValue, currency),
-            formatCurrency(filteredSummary.totalCost, currency),
-            formatCurrency(filteredSummary.cylindersProfit, currency),
-          ],
-        ];
+    dynamicColumnStyles[cylinderCodes.length + 1] = { halign: 'right', fontStyle: 'bold' };
 
     autoTable(doc, {
       startY: 41,
@@ -629,8 +644,8 @@ export function SalesView({
       theme: 'striped',
       styles: {
         font: 'helvetica',
-        fontSize: includeExpenses ? 7.8 : 8.5,
-        cellPadding: 2.4,
+        fontSize: cylinderCodes.length > 4 ? 8 : 8.8,
+        cellPadding: 2.6,
         textColor: [30, 41, 59],
         valign: 'middle',
       },
@@ -638,36 +653,23 @@ export function SalesView({
         fillColor: [15, 23, 42],
         textColor: [255, 255, 255],
         fontStyle: 'bold',
-        fontSize: includeExpenses ? 7.8 : 8.5,
+        fontSize: cylinderCodes.length > 4 ? 8 : 8.8,
       },
       footStyles: {
         fillColor: [241, 245, 249],
         textColor: [15, 23, 42],
         fontStyle: 'bold',
-        fontSize: includeExpenses ? 8 : 8.6,
+        fontSize: cylinderCodes.length > 4 ? 8.2 : 9,
       },
       alternateRowStyles: {
         fillColor: [248, 250, 252],
       },
-      columnStyles: includeExpenses
-        ? {
-            0: { cellWidth: 30 },
-            1: { halign: 'right', cellWidth: 12 },
-            2: { halign: 'right', cellWidth: 12 },
-            3: { halign: 'right' },
-            4: { halign: 'right' },
-            5: { halign: 'right', fontStyle: 'bold' },
-            6: { halign: 'right' },
-            7: { halign: 'right', fontStyle: 'bold' },
-          }
-        : {
-            0: { cellWidth: 34 },
-            1: { halign: 'right', cellWidth: 18 },
-            2: { halign: 'right', cellWidth: 20 },
-            3: { halign: 'right' },
-            4: { halign: 'right' },
-            5: { halign: 'right', fontStyle: 'bold' },
-          },
+      columnStyles: dynamicColumnStyles,
+      didParseCell: (data) => {
+        if (data.section === 'head' || data.section === 'foot') {
+          data.cell.styles.halign = data.column.index === 0 ? 'left' : 'right';
+        }
+      },
     });
 
     const totalPages = doc.getNumberOfPages();
@@ -785,15 +787,17 @@ export function SalesView({
               <span>Exportar PDF</span>
             </button>
 
-            <button
-              type="button"
-              onClick={handleExportProfitExtractPdf}
-              disabled={filteredSummary.activeCount === 0 && (hasNarrowFilter || periodExpenses === 0)}
-              className="h-10 px-3.5 rounded-lg border border-emerald-300 dark:border-emerald-800/70 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-950/70 disabled:opacity-50 inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <TrendingUp className="w-3.5 h-3.5" />
-              <span>Extrato Lucros (PDF)</span>
-            </button>
+            {permissions.viewFinance && (
+              <button
+                type="button"
+                onClick={handleExportProfitExtractPdf}
+                disabled={filteredSummary.activeCount === 0 && (hasNarrowFilter || periodExpenses === 0)}
+                className="h-10 px-3.5 rounded-lg border border-emerald-300 dark:border-emerald-800/70 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-950/70 disabled:opacity-50 inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <TrendingUp className="w-3.5 h-3.5" />
+                <span>Extrato Lucros (PDF)</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -880,19 +884,23 @@ export function SalesView({
                 {formatCurrency(filteredSummary.totalValue, currency)}
               </span>
             </span>
-            <span aria-hidden="true">·</span>
-            <span title="Resultado Líquido Estimado">
-              Lucro:{' '}
-              <span
-                className={`font-semibold ${
-                  filteredSummary.estimatedNetResult >= 0
-                    ? 'text-emerald-700 dark:text-emerald-400'
-                    : 'text-red-700 dark:text-red-400'
-                }`}
-              >
-                {formatCurrency(filteredSummary.estimatedNetResult, currency)}
-              </span>
-            </span>
+            {permissions.viewFinance && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span title="Resultado Líquido Estimado">
+                  Lucro:{' '}
+                  <span
+                    className={`font-semibold ${
+                      filteredSummary.estimatedNetResult >= 0
+                        ? 'text-emerald-700 dark:text-emerald-400'
+                        : 'text-red-700 dark:text-red-400'
+                    }`}
+                  >
+                    {formatCurrency(filteredSummary.estimatedNetResult, currency)}
+                  </span>
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -909,6 +917,7 @@ export function SalesView({
           busyId={busyId}
           onStatusChange={handleStatusChange}
           onSelectSale={setSelectedSale}
+          canManageDeliveries={permissions.manageDeliveries}
         />
       ) : (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
@@ -959,7 +968,8 @@ export function SalesView({
                     <td className="py-3 px-4 text-xs text-slate-700 dark:text-slate-300">
                       {sale.fulfillmentType === 'pickup' ? (
                         <span className="text-slate-500 dark:text-slate-400">Balcão</span>
-                      ) : sale.deliveryStatus === 'pending' || sale.deliveryStatus === 'in_route' ? (
+                      ) : permissions.manageDeliveries &&
+                        (sale.deliveryStatus === 'pending' || sale.deliveryStatus === 'in_route') ? (
                         <select
                           aria-label={`Entregador do pedido ${sale.orderNumber}`}
                           disabled={busyId === sale.id}
@@ -994,7 +1004,7 @@ export function SalesView({
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="inline-flex items-center justify-end gap-1.5">
-                        {sale.deliveryStatus === 'pending' && (
+                        {permissions.manageDeliveries && sale.deliveryStatus === 'pending' && (
                           <button
                             type="button"
                             disabled={busyId === sale.id}
@@ -1006,7 +1016,7 @@ export function SalesView({
                             <span>Despachar</span>
                           </button>
                         )}
-                        {sale.deliveryStatus === 'in_route' && (
+                        {permissions.manageDeliveries && sale.deliveryStatus === 'in_route' && (
                           <button
                             type="button"
                             disabled={busyId === sale.id}
@@ -1017,7 +1027,9 @@ export function SalesView({
                             <span>Entregar</span>
                           </button>
                         )}
-                        {sale.deliveryStatus !== 'cancelled' && sale.paymentStatus === 'pending' && (
+                        {(permissions.manageDeliveries || permissions.manageCustomers) &&
+                          sale.deliveryStatus !== 'cancelled' &&
+                          sale.paymentStatus === 'pending' && (
                           <button
                             type="button"
                             disabled={busyId === sale.id}
@@ -1037,7 +1049,8 @@ export function SalesView({
                             <span>Imprimir Recibo</span>
                           </button>
                         )}
-                        {(sale.deliveryStatus === 'pending' || sale.deliveryStatus === 'in_route') && (
+                        {permissions.manageDeliveries &&
+                          (sale.deliveryStatus === 'pending' || sale.deliveryStatus === 'in_route') && (
                           <button
                             type="button"
                             disabled={busyId === sale.id}
@@ -1158,7 +1171,7 @@ export function SalesView({
                     {formatCurrency(selectedSale.totalAmount, currency)}
                   </dd>
                 </div>
-                {selectedSale.deliveryStatus !== 'cancelled' && (
+                {permissions.viewFinance && selectedSale.deliveryStatus !== 'cancelled' && (
                   <div className="flex justify-between text-xs">
                     <dt className="text-slate-500 dark:text-slate-400">
                       Lucro estimado (CMV {formatCurrency(getSaleCost(selectedSale), currency)})
@@ -1200,18 +1213,20 @@ export function SalesView({
                   <span>Imprimir Recibo</span>
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  const target = selectedSale;
-                  setSelectedSale(null);
-                  setDeleteTarget(target);
-                }}
-                className="w-full py-2.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50/60 dark:bg-red-950/30 text-sm font-medium text-red-700 dark:text-red-400 hover:bg-red-100/70 dark:hover:bg-red-950/60 inline-flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>Descartar / Excluir Registro</span>
-              </button>
+              {(permissions.manageDeliveries || permissions.manageSettings || permissions.viewFinance) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = selectedSale;
+                    setSelectedSale(null);
+                    setDeleteTarget(target);
+                  }}
+                  className="w-full py-2.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50/60 dark:bg-red-950/30 text-sm font-medium text-red-700 dark:text-red-400 hover:bg-red-100/70 dark:hover:bg-red-950/60 inline-flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>Descartar / Excluir Registro</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setSelectedSale(null)}

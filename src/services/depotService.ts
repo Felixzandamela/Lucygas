@@ -2,30 +2,85 @@ import {
   collection,
   deleteDoc,
   doc,
+  type DocumentData,
   getDoc,
+  getDocs,
+  query,
+  type QueryDocumentSnapshot,
   serverTimestamp,
   setDoc,
   Timestamp,
   updateDoc,
+  where,
   writeBatch,
 } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { clampNonNegative, generateOrderNumber, sanitizeText } from '../lib/formatters';
 import {
   type CurrencyCode,
   type Customer,
   type Cylinder,
+  type Depot,
+  type DepotMember,
   type DeliveryStatus,
   type Expense,
   type ExpenseCategory,
   FIELD_LIMITS,
+  FULL_ADMIN_PERMISSIONS,
   type FulfillmentType,
+  LEGACY_MEMBER_PERMISSIONS,
+  type MemberPermissions,
+  type MemberRole,
   type MovementType,
+  normalizePermissions,
   type PaymentMethod,
+  type PaymentStatus,
   type Sale,
   type SaleMode,
   type StockMovement,
 } from '../types/gas';
+
+const depotMembersCache = new Map<string, string[]>();
+
+export function normalizeEmail(email?: string | null): string {
+  return (email ?? '').trim().toLowerCase().slice(0, FIELD_LIMITS.EMAIL);
+}
+
+export function setDepotMemberEmailsContext(depotId: string, emails?: string[]): void {
+  const clean = Array.from(
+    new Set((emails ?? []).map((e) => normalizeEmail(e)).filter(Boolean))
+  ).slice(0, FIELD_LIMITS.MAX_MEMBER_EMAILS);
+  if (clean.length > 0) {
+    depotMembersCache.set(depotId, clean);
+  }
+}
+
+function getDepotMemberEmails(depotId: string): string[] {
+  const cached = depotMembersCache.get(depotId);
+  if (cached && cached.length > 0) return cached;
+  const currentEmail = normalizeEmail(auth.currentUser?.email);
+  return currentEmail ? [currentEmail] : [];
+}
+
+function getActorUid(fallbackDepotId: string): string {
+  return auth.currentUser?.uid || fallbackDepotId;
+}
+
+function buildAccessFields(depotId: string): { ownerId: string; memberEmails?: string[] } {
+  const memberEmails = getDepotMemberEmails(depotId);
+  return {
+    ownerId: getActorUid(depotId),
+    ...(memberEmails.length > 0 ? { memberEmails } : {}),
+  };
+}
+
+function stringArraysEqual(a: unknown, b: string[]): boolean {
+  if (!Array.isArray(a) || a.length !== b.length) return false;
+  for (let i = 0; i < b.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
 
 function toSafeOccurredAtTimestamp(date?: Date): Timestamp | undefined {
   if (!date || Number.isNaN(date.getTime())) return undefined;
@@ -120,13 +175,344 @@ async function executeFirestoreWrite(
   ]);
 }
 
-export async function ensureDepotInitialized(uid: string, displayName?: string | null): Promise<void> {
+const SUBCOLLECTIONS_WITH_UPDATED_AT = new Set(['cylinders', 'customers', 'sales', 'members']);
+
+export function emailToMemberDocId(email: string): string {
+  const clean = normalizeEmail(email);
+  const slug = clean.replace(/[^a-z0-9]/g, '_').replace(/^_+|_+$/g, '').slice(0, 36) || 'user';
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ (ch + i), 0x85ebca6b) >>> 0;
+  }
+  return `m_${slug}_${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
+}
+
+export async function syncDepotSubcollectionsMemberEmails(
+  depotId: string,
+  ownerUid: string,
+  queryEmail: string,
+  targetEmails: string[]
+): Promise<void> {
+  if (targetEmails.length === 0) return;
+
+  const subcollections = [
+    'cylinders',
+    'customers',
+    'sales',
+    'stockMovements',
+    'expenses',
+    'members',
+  ] as const;
+  const ops: Array<(batch: ReturnType<typeof writeBatch>) => void> = [];
+  const cleanQueryEmail = normalizeEmail(queryEmail);
+
+  for (const colName of subcollections) {
+    const colRef = collection(db, 'depots', depotId, colName);
+    const docsMap = new Map<string, QueryDocumentSnapshot<DocumentData>>();
+
+    try {
+      const ownerSnap = await getDocs(query(colRef, where('ownerId', '==', ownerUid)));
+      for (const d of ownerSnap.docs) {
+        docsMap.set(d.id, d);
+      }
+      if (cleanQueryEmail) {
+        const memberSnap = await getDocs(
+          query(colRef, where('memberEmails', 'array-contains', cleanQueryEmail))
+        );
+        for (const d of memberSnap.docs) {
+          docsMap.set(d.id, d);
+        }
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, `depots/${depotId}/${colName}`);
+    }
+
+    const withUpdatedAt = SUBCOLLECTIONS_WITH_UPDATED_AT.has(colName);
+    for (const d of docsMap.values()) {
+      const existingEmails = d.data().memberEmails;
+      if (!stringArraysEqual(existingEmails, targetEmails)) {
+        const docRef = doc(db, 'depots', depotId, colName, d.id);
+        ops.push((b) =>
+          b.update(docRef, {
+            memberEmails: targetEmails,
+            ...(withUpdatedAt ? { updatedAt: serverTimestamp() } : {}),
+          })
+        );
+      }
+    }
+  }
+
+  const CHUNK_SIZE = 400;
+  for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
+    const batch = writeBatch(db);
+    for (const op of ops.slice(i, i + CHUNK_SIZE)) {
+      op(batch);
+    }
+    await executeFirestoreWrite(
+      batch.commit(),
+      OperationType.UPDATE,
+      `depots/${depotId}`
+    );
+  }
+}
+
+export async function updateDepotMemberEmails(
+  depotId: string,
+  ownerUid: string,
+  ownerEmail: string,
+  rawEmails: string[]
+): Promise<string[]> {
+  const cleanOwnerEmail = normalizeEmail(ownerEmail);
+  const cleanEmails = Array.from(
+    new Set([cleanOwnerEmail, ...rawEmails.map((e) => normalizeEmail(e))].filter(Boolean))
+  ).slice(0, FIELD_LIMITS.MAX_MEMBER_EMAILS);
+
+  const depotRef = doc(db, 'depots', depotId);
+  await executeFirestoreWrite(
+    updateDoc(depotRef, {
+      memberEmails: cleanEmails,
+      updatedAt: serverTimestamp(),
+    }),
+    OperationType.UPDATE,
+    `depots/${depotId}`
+  );
+
+  setDepotMemberEmailsContext(depotId, cleanEmails);
+  await syncDepotSubcollectionsMemberEmails(depotId, ownerUid, cleanOwnerEmail, cleanEmails);
+  return cleanEmails;
+}
+
+function buildSanitizedMemberPermissionsMap(
+  depot: Depot,
+  emails: string[],
+  overrides?: Record<string, MemberPermissions>
+): Record<string, MemberPermissions> {
+  const next: Record<string, MemberPermissions> = {};
+  const existingMap = depot.memberPermissions ?? {};
+  const ownerEmail = normalizeEmail(depot.memberEmails?.[0]);
+
+  for (const email of emails) {
+    const clean = normalizeEmail(email);
+    if (!clean) continue;
+    if (overrides?.[clean]) {
+      next[clean] = normalizePermissions(overrides[clean], LEGACY_MEMBER_PERMISSIONS);
+    } else if (existingMap[clean]) {
+      next[clean] = normalizePermissions(existingMap[clean], LEGACY_MEMBER_PERMISSIONS);
+    } else if (clean === ownerEmail) {
+      next[clean] = { ...FULL_ADMIN_PERMISSIONS };
+    }
+  }
+  return next;
+}
+
+export async function inviteOrUpdateDepotMember(input: {
+  depotId: string;
+  depot: Depot;
+  actorEmail: string;
+  email: string;
+  displayName: string;
+  role: MemberRole;
+  permissions: MemberPermissions;
+  existingMembers: DepotMember[];
+}): Promise<void> {
+  const { depotId, depot, actorEmail, email, displayName, role, permissions, existingMembers } = input;
+  const targetEmail = normalizeEmail(email);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail)) {
+    throw new Error('Informe um endereço de e-mail válido.');
+  }
+
+  const cleanActorEmail = normalizeEmail(actorEmail);
+  const existingList = (depot.memberEmails ?? []).map((e) => normalizeEmail(e)).filter(Boolean);
+  const ownerEmail = existingList[0] || cleanActorEmail;
+  const nextEmails = Array.from(new Set([ownerEmail, ...existingList, targetEmail])).slice(
+    0,
+    FIELD_LIMITS.MAX_MEMBER_EMAILS
+  );
+
+  if (!nextEmails.includes(targetEmail)) {
+    throw new Error(`Limite máximo de ${FIELD_LIMITS.MAX_MEMBER_EMAILS} usuários atingido.`);
+  }
+
+  const isTargetOwner = targetEmail === ownerEmail;
+  const effectivePermissions: MemberPermissions = isTargetOwner
+    ? { ...FULL_ADMIN_PERMISSIONS }
+    : normalizePermissions(permissions, LEGACY_MEMBER_PERMISSIONS);
+  const effectiveRole: MemberRole = isTargetOwner ? 'admin' : role;
+
+  const nextMemberPermissions = buildSanitizedMemberPermissionsMap(depot, nextEmails, {
+    [targetEmail]: effectivePermissions,
+  });
+
+  const depotRef = doc(db, 'depots', depotId);
+  await executeFirestoreWrite(
+    updateDoc(depotRef, {
+      memberEmails: nextEmails,
+      memberPermissions: nextMemberPermissions,
+      updatedAt: serverTimestamp(),
+    }),
+    OperationType.UPDATE,
+    `depots/${depotId}`
+  );
+
+  setDepotMemberEmailsContext(depotId, nextEmails);
+
+  const existingMember = existingMembers.find((m) => normalizeEmail(m.email) === targetEmail);
+  const memberId = existingMember?.id || emailToMemberDocId(targetEmail);
+  const memberRef = doc(db, 'depots', depotId, 'members', memberId);
+  const cleanName = sanitizeText(displayName, FIELD_LIMITS.CUSTOMER_NAME);
+
+  if (existingMember) {
+    await executeFirestoreWrite(
+      updateDoc(memberRef, {
+        memberEmails: nextEmails,
+        displayName: cleanName,
+        role: effectiveRole,
+        permissions: effectivePermissions,
+        updatedAt: serverTimestamp(),
+      }),
+      OperationType.UPDATE,
+      `depots/${depotId}/members/${memberId}`
+    );
+  } else {
+    await executeFirestoreWrite(
+      setDoc(memberRef, {
+        ownerId: getActorUid(depotId),
+        memberEmails: nextEmails,
+        email: targetEmail,
+        displayName: cleanName,
+        role: effectiveRole,
+        permissions: effectivePermissions,
+        status: isTargetOwner ? 'active' : 'invited',
+        joinedUid: isTargetOwner ? depot.ownerId : '',
+        invitedByEmail: sanitizeText(cleanActorEmail, FIELD_LIMITS.EMAIL),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+      OperationType.CREATE,
+      `depots/${depotId}/members/${memberId}`
+    );
+  }
+
+  const queryEmail = cleanActorEmail || ownerEmail;
+  await syncDepotSubcollectionsMemberEmails(depotId, depot.ownerId, queryEmail, nextEmails);
+}
+
+export async function removeDepotMember(input: {
+  depotId: string;
+  depot: Depot;
+  actorEmail: string;
+  emailToRemove: string;
+  existingMembers: DepotMember[];
+}): Promise<void> {
+  const { depotId, depot, actorEmail, emailToRemove, existingMembers } = input;
+  const targetEmail = normalizeEmail(emailToRemove);
+  const cleanActorEmail = normalizeEmail(actorEmail);
+  const existingList = (depot.memberEmails ?? []).map((e) => normalizeEmail(e)).filter(Boolean);
+  const ownerEmail = existingList[0] || '';
+
+  if (targetEmail === ownerEmail) {
+    throw new Error('O administrador principal da distribuidora não pode ser removido.');
+  }
+  if (targetEmail === cleanActorEmail) {
+    throw new Error('Você não pode remover o próprio acesso enquanto está conectado.');
+  }
+
+  const nextEmails = existingList.filter((e) => e !== targetEmail);
+  const nextMemberPermissions = buildSanitizedMemberPermissionsMap(depot, nextEmails);
+
+  const existingMember = existingMembers.find((m) => normalizeEmail(m.email) === targetEmail);
+  if (existingMember) {
+    await executeFirestoreWrite(
+      deleteDoc(doc(db, 'depots', depotId, 'members', existingMember.id)),
+      OperationType.DELETE,
+      `depots/${depotId}/members/${existingMember.id}`
+    );
+  }
+
+  await executeFirestoreWrite(
+    updateDoc(doc(db, 'depots', depotId), {
+      memberEmails: nextEmails,
+      memberPermissions: nextMemberPermissions,
+      updatedAt: serverTimestamp(),
+    }),
+    OperationType.UPDATE,
+    `depots/${depotId}`
+  );
+
+  setDepotMemberEmailsContext(depotId, nextEmails);
+  const queryEmail = cleanActorEmail || ownerEmail;
+  await syncDepotSubcollectionsMemberEmails(depotId, depot.ownerId, queryEmail, nextEmails);
+}
+
+export async function activateSelfMemberRecord(
+  depotId: string,
+  userUid: string,
+  userEmail: string,
+  displayName: string,
+  existingMembers: DepotMember[]
+): Promise<void> {
+  const cleanEmail = normalizeEmail(userEmail);
+  if (!cleanEmail) return;
+  const existing = existingMembers.find((m) => normalizeEmail(m.email) === cleanEmail);
+  if (!existing) return;
+  if (existing.status === 'active' && existing.joinedUid === userUid) return;
+
+  const memberRef = doc(db, 'depots', depotId, 'members', existing.id);
+  const nextName =
+    existing.displayName.trim() || sanitizeText(displayName, FIELD_LIMITS.CUSTOMER_NAME);
+  await updateDoc(memberRef, {
+    status: 'active',
+    joinedUid: userUid,
+    displayName: nextName,
+    updatedAt: serverTimestamp(),
+  }).catch(() => {
+    // Best-effort self-activation; do not interrupt session if transient error
+  });
+}
+
+export async function ensureDepotInitialized(
+  uid: string,
+  displayName?: string | null,
+  email?: string | null
+): Promise<{ activeDepotId: string; availableDepots: Depot[] }> {
+  const userEmail = normalizeEmail(email);
   const depotPath = `depots/${uid}`;
   const depotRef = doc(db, 'depots', uid);
 
-  let snap;
+  const depotMap = new Map<string, Depot>();
+
+  // 1. Discover any shared depots where this account is an authorized member
+  if (userEmail) {
+    try {
+      const sharedSnap = await getDocs(
+        query(collection(db, 'depots'), where('memberEmails', 'array-contains', userEmail))
+      );
+      for (const d of sharedSnap.docs) {
+        const depotData = {
+          id: d.id,
+          ...(d.data({ serverTimestamps: 'estimate' }) as Omit<Depot, 'id'>),
+        };
+        depotMap.set(d.id, depotData);
+        setDepotMemberEmailsContext(d.id, depotData.memberEmails);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message.toLowerCase() : '';
+      if (msg.includes('offline') || msg.includes('unavailable')) {
+        throw new Error(
+          'Sem conexão com a internet para carregar os dados iniciais. Conecte-se uma vez para habilitar o modo offline.'
+        );
+      }
+      handleFirestoreError(error, OperationType.LIST, 'depots');
+    }
+  }
+
+  // 2. Check user's own depot
+  let ownSnap;
   try {
-    snap = await getDoc(depotRef);
+    ownSnap = await getDoc(depotRef);
   } catch (error) {
     const msg = error instanceof Error ? error.message.toLowerCase() : '';
     if (msg.includes('offline') || msg.includes('unavailable')) {
@@ -137,48 +523,109 @@ export async function ensureDepotInitialized(uid: string, displayName?: string |
     handleFirestoreError(error, OperationType.GET, depotPath);
   }
 
-  if (snap.exists()) return;
+  if (ownSnap.exists()) {
+    const ownDepot = {
+      id: ownSnap.id,
+      ...(ownSnap.data({ serverTimestamps: 'estimate' }) as Omit<Depot, 'id'>),
+    };
+    const existingEmails = (ownDepot.memberEmails ?? []).map((e) => normalizeEmail(e)).filter(Boolean);
+    const needsUpgrade = userEmail && !existingEmails.includes(userEmail);
 
-  const firstName = sanitizeText((displayName || 'Central').split(' ')[0], 30);
-  const depotName = sanitizeText(`Distribuidora ${firstName}`, FIELD_LIMITS.DEPOT_NAME);
+    if (needsUpgrade) {
+      const upgradedEmails = Array.from(new Set([userEmail, ...existingEmails])).slice(
+        0,
+        FIELD_LIMITS.MAX_MEMBER_EMAILS
+      );
+      await updateDepotMemberEmails(uid, uid, userEmail, upgradedEmails);
+      ownDepot.memberEmails = upgradedEmails;
+    } else if (existingEmails.length > 0 && userEmail) {
+      // Ensure any legacy subcollection docs missing memberEmails are backfilled once
+      await syncDepotSubcollectionsMemberEmails(uid, uid, userEmail, existingEmails);
+    }
 
-  await executeFirestoreWrite(
-    setDoc(depotRef, {
+    setDepotMemberEmailsContext(ownDepot.id, ownDepot.memberEmails);
+    depotMap.set(ownDepot.id, ownDepot);
+  }
+
+  const hasSharedDepot = Array.from(depotMap.values()).some((d) => d.ownerId !== uid);
+
+  // 3. Only create a personal depot if the user neither owns one nor belongs to a shared depot yet
+  if (!ownSnap.exists() && !hasSharedDepot) {
+    const firstName = sanitizeText((displayName || 'Central').split(' ')[0], 30);
+    const depotName = sanitizeText(`Distribuidora ${firstName}`, FIELD_LIMITS.DEPOT_NAME);
+    const initialMemberEmails = userEmail ? [userEmail] : [];
+
+    await executeFirestoreWrite(
+      setDoc(depotRef, {
+        ownerId: uid,
+        ...(initialMemberEmails.length > 0 ? { memberEmails: initialMemberEmails } : {}),
+        name: depotName,
+        currency: 'BRL' as CurrencyCode,
+        deliveryFee: 8,
+        drivers: ['Carlos Silva', 'Marcos Oliveira'],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+      OperationType.CREATE,
+      depotPath
+    );
+
+    const batch = writeBatch(db);
+    for (const item of DEFAULT_CYLINDERS) {
+      const cylRef = doc(db, 'depots', uid, 'cylinders', item.id);
+      batch.set(cylRef, {
+        ownerId: uid,
+        ...(initialMemberEmails.length > 0 ? { memberEmails: initialMemberEmails } : {}),
+        code: item.code,
+        name: item.name,
+        weightKg: item.weightKg,
+        fullCount: item.fullCount,
+        emptyCount: item.emptyCount,
+        salePrice: item.salePrice,
+        shellPrice: item.shellPrice,
+        costPrice: item.costPrice,
+        minStock: item.minStock,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    await executeFirestoreWrite(
+      batch.commit(),
+      OperationType.WRITE,
+      `depots/${uid}/cylinders`
+    );
+
+    setDepotMemberEmailsContext(uid, initialMemberEmails);
+    depotMap.set(uid, {
+      id: uid,
       ownerId: uid,
+      memberEmails: initialMemberEmails,
       name: depotName,
-      currency: 'BRL' as CurrencyCode,
+      currency: 'BRL',
       deliveryFee: 8,
       drivers: ['Carlos Silva', 'Marcos Oliveira'],
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    }),
-    OperationType.CREATE,
-    depotPath
-  );
-
-  const batch = writeBatch(db);
-  for (const item of DEFAULT_CYLINDERS) {
-    const cylRef = doc(db, 'depots', uid, 'cylinders', item.id);
-    batch.set(cylRef, {
-      ownerId: uid,
-      code: item.code,
-      name: item.name,
-      weightKg: item.weightKg,
-      fullCount: item.fullCount,
-      emptyCount: item.emptyCount,
-      salePrice: item.salePrice,
-      shellPrice: item.shellPrice,
-      costPrice: item.costPrice,
-      minStock: item.minStock,
-      updatedAt: serverTimestamp(),
     });
   }
 
-  await executeFirestoreWrite(
-    batch.commit(),
-    OperationType.WRITE,
-    `depots/${uid}/cylinders`
-  );
+  const availableDepots = Array.from(depotMap.values());
+  const savedChoice =
+    typeof window !== 'undefined'
+      ? window.localStorage.getItem(`lucygas_active_depot_${uid}`)
+      : null;
+
+  let activeDepotId = uid;
+  if (savedChoice && depotMap.has(savedChoice)) {
+    activeDepotId = savedChoice;
+  } else {
+    const shared = availableDepots.find((d) => d.ownerId !== uid);
+    if (shared) {
+      activeDepotId = shared.id;
+    } else if (availableDepots[0]) {
+      activeDepotId = availableDepots[0].id;
+    }
+  }
+
+  return { activeDepotId, availableDepots };
 }
 
 export interface CreateSaleInput {
@@ -229,7 +676,7 @@ export async function createSaleTransaction(input: CreateSaleInput): Promise<Sal
   const safeDeliveryFee = fulfillmentType === 'delivery' ? clampNonNegative(deliveryFee, 100000) : 0;
   const totalAmount = clampNonNegative(unitPrice * qty + safeDeliveryFee - safeDiscount);
 
-  const paymentStatus = paymentMethod === 'credit' ? 'pending' : 'paid';
+  const paymentStatus: PaymentStatus = paymentMethod === 'credit' ? 'pending' : 'paid';
   const deliveryStatus: DeliveryStatus = fulfillmentType === 'pickup' ? 'delivered' : 'pending';
 
   const saleRef = doc(collection(db, 'depots', uid, 'sales'));
@@ -238,7 +685,7 @@ export async function createSaleTransaction(input: CreateSaleInput): Promise<Sal
   const orderNumber = generateOrderNumber();
 
   const salePayload = {
-    ownerId: uid,
+    ...buildAccessFields(uid),
     orderNumber,
     customerId: customer ? customer.id : '',
     customerName: sanitizeText(customer ? customer.name : walkInName || 'Cliente Balcão', FIELD_LIMITS.CUSTOMER_NAME),
@@ -262,7 +709,7 @@ export async function createSaleTransaction(input: CreateSaleInput): Promise<Sal
     paymentStatus,
     deliveryStatus,
     notes: sanitizeText(notes, FIELD_LIMITS.NOTES),
-  } as const;
+  };
 
   const batch = writeBatch(db);
   const occurredTs = toSafeOccurredAtTimestamp(occurredAt);
@@ -282,7 +729,7 @@ export async function createSaleTransaction(input: CreateSaleInput): Promise<Sal
   });
 
   batch.set(movementRef, {
-    ownerId: uid,
+    ...buildAccessFields(uid),
     cylinderId: cylinder.id,
     cylinderCode: sanitizeText(cylinder.code, FIELD_LIMITS.CYLINDER_CODE),
     movementType: 'sale' as MovementType,
@@ -351,7 +798,7 @@ export async function updateSaleDelivery(
 
     const movementRef = doc(collection(db, 'depots', uid, 'stockMovements'));
     batch.set(movementRef, {
-      ownerId: uid,
+      ...buildAccessFields(uid),
       cylinderId: cylinder.id,
       cylinderCode: sanitizeText(cylinder.code, FIELD_LIMITS.CYLINDER_CODE),
       movementType: 'cancel_restore' as MovementType,
@@ -452,7 +899,7 @@ export async function adjustCylinderStock(
   });
 
   batch.set(movementRef, {
-    ownerId: uid,
+    ...buildAccessFields(uid),
     cylinderId: cylinder.id,
     cylinderCode: sanitizeText(cylinder.code, FIELD_LIMITS.CYLINDER_CODE),
     movementType,
@@ -524,7 +971,7 @@ export async function createCylinder(
 
   await executeFirestoreWrite(
     setDoc(cylRef, {
-      ownerId: uid,
+      ...buildAccessFields(uid),
       code: cleanCode,
       name: sanitizeText(payload.name, FIELD_LIMITS.CYLINDER_NAME),
       weightKg: Math.max(0.5, clampNonNegative(payload.weightKg, 1000)),
@@ -545,7 +992,7 @@ export async function createCylinder(
     const movementRef = doc(collection(db, 'depots', uid, 'stockMovements'));
     await executeFirestoreWrite(
       setDoc(movementRef, {
-        ownerId: uid,
+        ...buildAccessFields(uid),
         cylinderId: cylRef.id,
         cylinderCode: cleanCode,
         movementType: 'restock' as MovementType,
@@ -590,7 +1037,7 @@ export async function createCustomer(
   const ref = doc(collection(db, 'depots', uid, 'customers'));
   await executeFirestoreWrite(
     setDoc(ref, {
-      ownerId: uid,
+      ...buildAccessFields(uid),
       name: sanitizeText(payload.name, FIELD_LIMITS.CUSTOMER_NAME),
       phone: sanitizeText(payload.phone, FIELD_LIMITS.PHONE),
       address: sanitizeText(payload.address, FIELD_LIMITS.ADDRESS),
@@ -659,7 +1106,7 @@ export async function createExpense(
   const occurredTs = toSafeOccurredAtTimestamp(payload.occurredAt);
   await executeFirestoreWrite(
     setDoc(ref, {
-      ownerId: uid,
+      ...buildAccessFields(uid),
       category: payload.category,
       description: sanitizeText(payload.description, FIELD_LIMITS.EXPENSE_DESC),
       amount,
@@ -761,7 +1208,7 @@ async function ensureCylindersExistForCodes(
       const cylRef = doc(db, 'depots', uid, 'cylinders', cylId);
       const created: Cylinder = {
         id: cylId,
-        ownerId: uid,
+        ...buildAccessFields(uid),
         code: sanitizeText(code, FIELD_LIMITS.CYLINDER_CODE),
         name: sanitizeText(`Botijão ${code} (${weightKg} kg)`, FIELD_LIMITS.CYLINDER_NAME),
         weightKg,
@@ -773,7 +1220,7 @@ async function ensureCylindersExistForCodes(
         minStock: 3,
       };
       createBatch.set(cylRef, {
-        ownerId: uid,
+        ...buildAccessFields(uid),
         code: created.code,
         name: created.name,
         weightKg: created.weightKg,
@@ -826,7 +1273,7 @@ export async function saveInitialStockToFirestore(input: {
     });
     const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
     batch.set(movRef, {
-      ownerId: uid,
+      ...buildAccessFields(uid),
       cylinderId: cyl.id,
       cylinderCode: cyl.code,
       movementType: 'adjustment' as MovementType,
@@ -911,7 +1358,7 @@ export async function saveSingleHistoricalEvent(input: {
     saleId = saleRef.id;
 
     batch.set(saleRef, {
-      ownerId: uid,
+      ...buildAccessFields(uid),
       orderNumber,
       customerId: '',
       customerName: 'Cliente Balcão',
@@ -938,7 +1385,7 @@ export async function saveSingleHistoricalEvent(input: {
     });
 
     batch.set(movRef, {
-      ownerId: uid,
+      ...buildAccessFields(uid),
       cylinderId: cyl.id,
       cylinderCode: cyl.code,
       movementType: 'sale' as MovementType,
@@ -954,7 +1401,7 @@ export async function saveSingleHistoricalEvent(input: {
     nextEmpty = baseEmpty - emptiesUsed;
 
     batch.set(movRef, {
-      ownerId: uid,
+      ...buildAccessFields(uid),
       cylinderId: cyl.id,
       cylinderCode: cyl.code,
       movementType: 'restock' as MovementType,
@@ -968,7 +1415,7 @@ export async function saveSingleHistoricalEvent(input: {
     nextFull = baseFull + qty;
 
     batch.set(movRef, {
-      ownerId: uid,
+      ...buildAccessFields(uid),
       cylinderId: cyl.id,
       cylinderCode: cyl.code,
       movementType: 'restock' as MovementType,
@@ -1106,7 +1553,7 @@ export async function applyHistoricalLedgerRebuild(input: {
       const cylRef = doc(db, 'depots', uid, 'cylinders', cylId);
       const created: Cylinder = {
         id: cylId,
-        ownerId: uid,
+        ...buildAccessFields(uid),
         code: sanitizeText(code, FIELD_LIMITS.CYLINDER_CODE),
         name: sanitizeText(`Botijão ${code} (${weightKg} kg)`, FIELD_LIMITS.CYLINDER_NAME),
         weightKg,
@@ -1118,7 +1565,7 @@ export async function applyHistoricalLedgerRebuild(input: {
         minStock: 3,
       };
       createBatch.set(cylRef, {
-        ownerId: uid,
+        ...buildAccessFields(uid),
         code: created.code,
         name: created.name,
         weightKg: created.weightKg,
@@ -1177,7 +1624,7 @@ export async function applyHistoricalLedgerRebuild(input: {
     const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
     ops.push((b) =>
       b.set(movRef, {
-        ownerId: uid,
+        ...buildAccessFields(uid),
         cylinderId: cyl.id,
         cylinderCode: cyl.code,
         movementType: 'adjustment' as MovementType,
@@ -1221,7 +1668,7 @@ export async function applyHistoricalLedgerRebuild(input: {
       const saleRef = doc(collection(db, 'depots', uid, 'sales'));
       ops.push((b) =>
         b.set(saleRef, {
-          ownerId: uid,
+          ...buildAccessFields(uid),
           orderNumber,
           customerId: '',
           customerName: 'Cliente Balcão',
@@ -1251,7 +1698,7 @@ export async function applyHistoricalLedgerRebuild(input: {
       const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
       ops.push((b) =>
         b.set(movRef, {
-          ownerId: uid,
+          ...buildAccessFields(uid),
           cylinderId: cyl.id,
           cylinderCode: cyl.code,
           movementType: 'sale' as MovementType,
@@ -1270,7 +1717,7 @@ export async function applyHistoricalLedgerRebuild(input: {
       const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
       ops.push((b) =>
         b.set(movRef, {
-          ownerId: uid,
+          ...buildAccessFields(uid),
           cylinderId: cyl.id,
           cylinderCode: cyl.code,
           movementType: 'restock' as MovementType,
@@ -1287,7 +1734,7 @@ export async function applyHistoricalLedgerRebuild(input: {
       const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
       ops.push((b) =>
         b.set(movRef, {
-          ownerId: uid,
+          ...buildAccessFields(uid),
           cylinderId: cyl.id,
           cylinderCode: cyl.code,
           movementType: 'restock' as MovementType,

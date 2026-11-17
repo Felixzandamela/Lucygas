@@ -25,6 +25,7 @@ import {
   type CurrencyCode,
   type Cylinder,
   FIELD_LIMITS,
+  type MemberPermissions,
   MOVEMENT_TYPE_LABELS,
   type StockMovement,
 } from '../types/gas';
@@ -36,6 +37,7 @@ interface InventoryViewProps {
   currency: CurrencyCode;
   cylinders: Cylinder[];
   movements: StockMovement[];
+  permissions: MemberPermissions;
   onNavigate?: (section: AppSection) => void;
 }
 
@@ -44,6 +46,7 @@ export function InventoryView({
   currency,
   cylinders,
   movements,
+  permissions,
   onNavigate,
 }: InventoryViewProps) {
   const [stockModalCylId, setStockModalCylId] = useState<string | null>(null);
@@ -97,10 +100,16 @@ export function InventoryView({
     }
     setStockModalCylId(target.id);
     setMovementType(type);
-    setFullQtyInput(type === 'restock' ? 10 : type === 'adjustment' ? target.fullCount : 0);
+    setFullQtyInput(
+      type === 'restock'
+        ? target.emptyCount
+        : type === 'adjustment'
+          ? target.fullCount
+          : 0
+    );
     setEmptyQtyInput(
       type === 'restock'
-        ? Math.min(10, target.emptyCount)
+        ? target.emptyCount
         : type === 'return_empty'
           ? 5
           : target.emptyCount
@@ -114,7 +123,8 @@ export function InventoryView({
     if (!target) return;
     setStockModalCylId(target.id);
     if (movementType === 'restock') {
-      setEmptyQtyInput(Math.min(10, target.emptyCount));
+      setFullQtyInput(target.emptyCount);
+      setEmptyQtyInput(target.emptyCount);
     } else if (movementType === 'adjustment') {
       setFullQtyInput(target.fullCount);
       setEmptyQtyInput(target.emptyCount);
@@ -175,9 +185,21 @@ export function InventoryView({
     try {
       let fullDelta = 0;
       let emptyDelta = 0;
+      let resolvedNote = movementNote.trim();
       if (movementType === 'restock') {
         fullDelta = Math.max(0, fullQtyInput);
         emptyDelta = -Math.min(stockModalCyl.emptyCount, Math.max(0, emptyQtyInput));
+        const returnedEmpties = Math.abs(emptyDelta);
+        if (!resolvedNote && fullDelta > 0) {
+          if (fullDelta > returnedEmpties) {
+            resolvedNote =
+              returnedEmpties > 0
+                ? 'Reposição e Aquisição completa'
+                : 'Aquisição completa';
+          } else {
+            resolvedNote = 'Reposição de carga';
+          }
+        }
       } else if (movementType === 'return_empty') {
         emptyDelta = Math.max(0, emptyQtyInput);
       } else {
@@ -185,7 +207,7 @@ export function InventoryView({
         emptyDelta = emptyQtyInput - stockModalCyl.emptyCount;
       }
       const occurredAt = movementDate ? new Date(`${movementDate}T12:00:00`) : undefined;
-      await adjustCylinderStock(uid, stockModalCyl, movementType, fullDelta, emptyDelta, movementNote, occurredAt);
+      await adjustCylinderStock(uid, stockModalCyl, movementType, fullDelta, emptyDelta, resolvedNote, occurredAt);
       setStockModalCylId(null);
     } finally {
       setSavingStock(false);
@@ -278,7 +300,7 @@ export function InventoryView({
               </div>
             </div>
 
-            {onNavigate && (
+            {onNavigate && (permissions.manageSettings || permissions.manageInventory) && (
               <button
                 type="button"
                 onClick={() => onNavigate('settings')}
@@ -320,13 +342,15 @@ export function InventoryView({
                       Atual: {cyl.fullCount} cheios · Mínimo: {cyl.minStock}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => openStockModal(cyl, 'restock')}
-                    className="px-2.5 py-1.5 rounded-md bg-slate-900 dark:bg-orange-600 text-white text-xs font-semibold hover:bg-slate-800 dark:hover:bg-orange-700 whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    Repor
-                  </button>
+                  {permissions.manageInventory && (
+                    <button
+                      type="button"
+                      onClick={() => openStockModal(cyl, 'restock')}
+                      className="px-2.5 py-1.5 rounded-md bg-slate-900 dark:bg-orange-600 text-white text-xs font-semibold hover:bg-slate-800 dark:hover:bg-orange-700 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Repor
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -348,18 +372,22 @@ export function InventoryView({
             {totalEmpty} cascos
           </p>
         </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Capital Imobilizado (Custo Cheios)</p>
-          <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
-            {formatCurrency(inventoryValue, currency)}
-          </p>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Capital Imobilizado (Custo dos Vazios)</p>
-          <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
-            {formatCurrency(emptyInventoryValue, currency)}
-          </p>
-        </div>
+        {permissions.viewFinance && (
+          <>
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Capital Imobilizado (Custo Cheios)</p>
+              <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
+                {formatCurrency(inventoryValue, currency)}
+              </p>
+            </div>
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Capital Imobilizado (Custo dos Vazios)</p>
+              <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
+                {formatCurrency(emptyInventoryValue, currency)}
+              </p>
+            </div>
+          </>
+        )}
       </section>
 
       {/* Cylinder Catalog & Stock Table */}
@@ -374,27 +402,29 @@ export function InventoryView({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
-            <button
-              type="button"
-              onClick={() => {
-                setImageError(null);
-                setShowNewCylModal(true);
-              }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Novo Botijão / Produto</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => openStockModal(cylinders[0] ?? null, 'restock')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <PackagePlus className="w-3.5 h-3.5" />
-              <span>Adicionar Stock</span>
-            </button>
-          </div>
+          {permissions.manageInventory && (
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setImageError(null);
+                  setShowNewCylModal(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-semibold text-slate-800 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Novo Botijão / Produto</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openStockModal(cylinders[0] ?? null, 'restock')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <PackagePlus className="w-3.5 h-3.5" />
+                <span>Adicionar Stock</span>
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="overflow-x-auto">
@@ -407,9 +437,9 @@ export function InventoryView({
                 <th className="py-3 px-4 text-right">Mínimo</th>
                 <th className="py-3 px-4 text-right">Preço Troca</th>
                 <th className="py-3 px-4 text-right">Casco Novo</th>
-                <th className="py-3 px-4 text-right">Margem</th>
+                {permissions.viewFinance && <th className="py-3 px-4 text-right">Margem</th>}
                 <th className="py-3 px-4">Situação</th>
-                <th className="py-3 px-4 text-right">Ações</th>
+                {permissions.manageInventory && <th className="py-3 px-4 text-right">Ações</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
@@ -466,40 +496,44 @@ export function InventoryView({
                     <td className="py-3.5 px-4 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
                       {formatCurrency(cyl.shellPrice, currency)}
                     </td>
-                    <td className="py-3.5 px-4 text-right font-mono tabular-nums text-emerald-700 dark:text-emerald-400 font-medium">
-                      {formatCurrency(margin, currency)}
-                    </td>
+                    {permissions.viewFinance && (
+                      <td className="py-3.5 px-4 text-right font-mono tabular-nums text-emerald-700 dark:text-emerald-400 font-medium">
+                        {formatCurrency(margin, currency)}
+                      </td>
+                    )}
                     <td className="py-3.5 px-4">
                       <StockHealthLabel fullCount={cyl.fullCount} minStock={cyl.minStock} />
                     </td>
-                    <td className="py-3.5 px-4 text-right">
-                      <div className="inline-flex items-center justify-end gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => openStockModal(cyl, 'restock')}
-                          className="px-2.5 py-1.5 rounded-md bg-slate-900 dark:bg-orange-600 text-white text-xs font-medium hover:bg-slate-800 dark:hover:bg-orange-700 inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
-                        >
-                          <PackagePlus className="w-3.5 h-3.5" />
-                          <span>Entrada</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openStockModal(cyl, 'adjustment')}
-                          title="Ajustar contagem manual"
-                          className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
-                        >
-                          <RefreshCw className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(cyl)}
-                          title="Editar preços e mínimo"
-                          className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
+                    {permissions.manageInventory && (
+                      <td className="py-3.5 px-4 text-right">
+                        <div className="inline-flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openStockModal(cyl, 'restock')}
+                            className="px-2.5 py-1.5 rounded-md bg-slate-900 dark:bg-orange-600 text-white text-xs font-medium hover:bg-slate-800 dark:hover:bg-orange-700 inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                          >
+                            <PackagePlus className="w-3.5 h-3.5" />
+                            <span>Entrada</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openStockModal(cyl, 'adjustment')}
+                            title="Ajustar contagem manual"
+                            className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(cyl)}
+                            title="Editar preços e mínimo"
+                            className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -619,8 +653,8 @@ export function InventoryView({
                 type="button"
                 onClick={() => {
                   setMovementType('restock');
-                  setFullQtyInput(10);
-                  setEmptyQtyInput(Math.min(10, stockModalCyl.emptyCount));
+                  setFullQtyInput(stockModalCyl.emptyCount);
+                  setEmptyQtyInput(stockModalCyl.emptyCount);
                 }}
                 className={`py-1.5 text-xs font-medium rounded-md cursor-pointer ${
                   movementType === 'restock'
@@ -663,39 +697,68 @@ export function InventoryView({
             </div>
 
             <form onSubmit={handleSaveStock} className="space-y-4">
-              {movementType === 'restock' && (
-                <>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Botijões Cheios Recebidos (+)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={10000}
-                      value={fullQtyInput}
-                      onChange={(e) => setFullQtyInput(Math.max(0, Number(e.target.value) || 0))}
-                      className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Cascos Vazios Entregues ao Fornecedor (-)
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={stockModalCyl.emptyCount}
-                      value={emptyQtyInput}
-                      onChange={(e) => setEmptyQtyInput(Math.max(0, Number(e.target.value) || 0))}
-                      className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
-                    />
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono">
-                      Disponível no pátio: {stockModalCyl.emptyCount} vazios
-                    </p>
-                  </div>
-                </>
-              )}
+              {movementType === 'restock' && (() => {
+                const clampedEmpties = Math.min(stockModalCyl.emptyCount, Math.max(0, emptyQtyInput));
+                const acquisitionQty = Math.max(0, fullQtyInput - clampedEmpties);
+                const isMixedAcquisition = fullQtyInput > clampedEmpties && clampedEmpties > 0;
+                const isPureAcquisition = fullQtyInput > 0 && clampedEmpties === 0;
+                return (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Botijões Cheios Recebidos (+)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={10000}
+                        value={fullQtyInput}
+                        onChange={(e) => {
+                          const nextFull = Math.max(0, Number(e.target.value) || 0);
+                          setFullQtyInput(nextFull);
+                          setEmptyQtyInput(Math.min(nextFull, stockModalCyl.emptyCount));
+                        }}
+                        className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                      />
+                      {fullQtyInput > 0 && (
+                        <p
+                          className={`text-xs mt-1.5 px-2.5 py-1.5 rounded-md border font-medium ${
+                            isMixedAcquisition || isPureAcquisition
+                              ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-300'
+                              : 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-300'
+                          }`}
+                        >
+                          {isMixedAcquisition
+                            ? `Reposição e Aquisição completa: ${clampedEmpties} reposição (troca) + ${acquisitionQty} aquisição completa (com casco).`
+                            : isPureAcquisition
+                              ? `Aquisição completa: ${acquisitionQty} botijão(ões) com casco novo (sem vazios entregues).`
+                              : `Reposição: ${fullQtyInput} botijão(ões) em troca de ${clampedEmpties} vazio(s).`}
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                        Cascos Vazios Entregues ao Fornecedor (-)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={stockModalCyl.emptyCount}
+                        value={emptyQtyInput}
+                        onChange={(e) =>
+                          setEmptyQtyInput(
+                            Math.min(stockModalCyl.emptyCount, Math.max(0, Number(e.target.value) || 0))
+                          )
+                        }
+                        className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                      />
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono">
+                        Disponível no pátio: {stockModalCyl.emptyCount} vazios
+                      </p>
+                    </div>
+                  </>
+                );
+              })()}
 
               {movementType === 'return_empty' && (
                 <div>
@@ -779,7 +842,10 @@ export function InventoryView({
                 </button>
                 <button
                   type="submit"
-                  disabled={savingStock}
+                  disabled={
+                    savingStock ||
+                    (movementType === 'restock' && fullQtyInput === 0 && emptyQtyInput === 0)
+                  }
                   className="px-4 py-2 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 cursor-pointer"
                 >
                   {savingStock ? 'Salvando...' : 'Confirmar Entrada'}

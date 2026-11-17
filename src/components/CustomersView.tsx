@@ -7,12 +7,13 @@ import {
   settleCustomerCredit,
   updateCustomerProfile,
 } from '../services/depotService';
-import { type CurrencyCode, type Customer, FIELD_LIMITS } from '../types/gas';
+import { type CurrencyCode, type Customer, FIELD_LIMITS, type MemberPermissions } from '../types/gas';
 
 interface CustomersViewProps {
   uid: string;
   currency: CurrencyCode;
   customers: Customer[];
+  permissions: MemberPermissions;
   onStartSaleForCustomer: (customerId: string) => void;
 }
 
@@ -20,6 +21,7 @@ export function CustomersView({
   uid,
   currency,
   customers,
+  permissions,
   onStartSaleForCustomer,
 }: CustomersViewProps) {
   const [search, setSearch] = useState('');
@@ -114,14 +116,16 @@ export function CustomersView({
           />
         </div>
 
-        <button
-          type="button"
-          onClick={openNewModal}
-          className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-slate-900 dark:bg-orange-600 text-white text-xs font-semibold hover:bg-slate-800 dark:hover:bg-orange-700 whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Cadastrar Cliente</span>
-        </button>
+        {permissions.manageCustomers && (
+          <button
+            type="button"
+            onClick={openNewModal}
+            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-slate-900 dark:bg-orange-600 text-white text-xs font-semibold hover:bg-slate-800 dark:hover:bg-orange-700 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Cadastrar Cliente</span>
+          </button>
+        )}
       </div>
 
       {/* Table */}
@@ -137,7 +141,7 @@ export function CustomersView({
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
               Cadastre clientes recorrentes para agilizar entregas, endereço e controle de fiado.
             </p>
-            {customers.length === 0 && (
+            {customers.length === 0 && permissions.manageCustomers && (
               <button
                 type="button"
                 onClick={openNewModal}
@@ -195,15 +199,17 @@ export function CustomersView({
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="inline-flex items-center justify-end gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => onStartSaleForCustomer(cust.id)}
-                          className="px-2.5 py-1.5 rounded-md bg-orange-600 text-white text-xs font-medium hover:bg-orange-700 inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
-                        >
-                          <ShoppingBag className="w-3.5 h-3.5" />
-                          <span>Vender</span>
-                        </button>
-                        {cust.creditBalance > 0 && (
+                        {permissions.createSales && (
+                          <button
+                            type="button"
+                            onClick={() => onStartSaleForCustomer(cust.id)}
+                            className="px-2.5 py-1.5 rounded-md bg-orange-600 text-white text-xs font-medium hover:bg-orange-700 inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                          >
+                            <ShoppingBag className="w-3.5 h-3.5" />
+                            <span>Vender</span>
+                          </button>
+                        )}
+                        {permissions.manageCustomers && cust.creditBalance > 0 && (
                           <button
                             type="button"
                             onClick={() => {
@@ -217,22 +223,26 @@ export function CustomersView({
                             <span>Receber</span>
                           </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(cust)}
-                          title="Editar cliente"
-                          className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(cust)}
-                          title="Excluir cliente"
-                          className="p-1.5 rounded-md text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {permissions.manageCustomers && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(cust)}
+                              title="Editar cliente"
+                              className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(cust)}
+                              title="Excluir cliente"
+                              className="p-1.5 rounded-md text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>

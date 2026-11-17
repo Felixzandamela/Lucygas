@@ -9,6 +9,7 @@ import {
   type Customer,
   type Cylinder,
   type DeliveryStatus,
+  type MemberPermissions,
   type Sale,
 } from '../types/gas';
 import { DeliveryStatusLabel, StockHealthLabel } from './StatusLabel';
@@ -19,6 +20,7 @@ interface DashboardViewProps {
   cylinders: Cylinder[];
   sales: Sale[];
   customers: Customer[];
+  permissions: MemberPermissions;
   onNavigate: (section: AppSection) => void;
 }
 
@@ -28,6 +30,7 @@ export function DashboardView({
   cylinders,
   sales,
   customers,
+  permissions,
   onNavigate,
 }: DashboardViewProps) {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -158,14 +161,16 @@ export function DashboardView({
                 Pedidos ativos excluindo cancelamentos
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('finance')}
-              className="text-xs font-medium text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <span>Ver financeiro</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+            {permissions.viewFinance && (
+              <button
+                type="button"
+                onClick={() => onNavigate('finance')}
+                className="text-xs font-medium text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <span>Ver financeiro</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           <div className="pt-8">
@@ -217,14 +222,16 @@ export function DashboardView({
                 Cheios disponíveis vs. cascos vazios
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('inventory')}
-              className="text-xs font-medium text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <span>Gerenciar</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+            {permissions.viewInventory && (
+              <button
+                type="button"
+                onClick={() => onNavigate('inventory')}
+                className="text-xs font-medium text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300 inline-flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <span>Gerenciar</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           <div className="overflow-x-auto mt-2">
@@ -288,21 +295,25 @@ export function DashboardView({
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => onNavigate('sales')}
-              className="text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              Ver histórico completo
-            </button>
-            <button
-              type="button"
-              onClick={() => onNavigate('pos')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Nova Venda</span>
-            </button>
+            {permissions.viewSales && (
+              <button
+                type="button"
+                onClick={() => onNavigate('sales')}
+                className="text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Ver histórico completo
+              </button>
+            )}
+            {permissions.createSales && (
+              <button
+                type="button"
+                onClick={() => onNavigate('pos')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Nova Venda</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -317,14 +328,16 @@ export function DashboardView({
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
               Seu estoque inicial de botijões P8, P13, P20 e P45 já está pronto. Registre a primeira venda no balcão ou delivery.
             </p>
-            <button
-              type="button"
-              onClick={() => onNavigate('pos')}
-              className="mt-5 inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-900 dark:bg-orange-600 text-white text-sm font-medium hover:bg-slate-800 dark:hover:bg-orange-700 transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Registrar Primeira Venda</span>
-            </button>
+            {permissions.createSales && (
+              <button
+                type="button"
+                onClick={() => onNavigate('pos')}
+                className="mt-5 inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-900 dark:bg-orange-600 text-white text-sm font-medium hover:bg-slate-800 dark:hover:bg-orange-700 transition-colors cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Registrar Primeira Venda</span>
+              </button>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto mt-2">
@@ -374,7 +387,7 @@ export function DashboardView({
                       {formatCurrency(sale.totalAmount, currency)}
                     </td>
                     <td className="py-3 pl-4 text-right">
-                      {sale.deliveryStatus === 'pending' && (
+                      {permissions.manageDeliveries && sale.deliveryStatus === 'pending' && (
                         <button
                           type="button"
                           disabled={updatingId === sale.id}
@@ -385,7 +398,7 @@ export function DashboardView({
                           <span>Despachar</span>
                         </button>
                       )}
-                      {sale.deliveryStatus === 'in_route' && (
+                      {permissions.manageDeliveries && sale.deliveryStatus === 'in_route' && (
                         <button
                           type="button"
                           disabled={updatingId === sale.id}
@@ -395,7 +408,9 @@ export function DashboardView({
                           <span>Confirmar Entrega</span>
                         </button>
                       )}
-                      {(sale.deliveryStatus === 'delivered' || sale.deliveryStatus === 'cancelled') && (
+                      {(!permissions.manageDeliveries ||
+                        sale.deliveryStatus === 'delivered' ||
+                        sale.deliveryStatus === 'cancelled') && (
                         <span className="text-xs text-slate-400 dark:text-slate-600">—</span>
                       )}
                     </td>
