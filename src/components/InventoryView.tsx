@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   ArrowDownToLine,
+  Calculator,
   Coins,
   Crop,
   Edit3,
@@ -61,13 +62,17 @@ export function InventoryView({
   onNavigate,
 }: InventoryViewProps) {
   const [stockModalCylId, setStockModalCylId] = useState<string | null>(null);
-  const [movementType, setMovementType] = useState<'restock' | 'return_empty' | 'adjustment'>('restock');
+  const [movementType, setMovementType] = useState<
+    'restock' | 'return_empty' | 'adjustment' | 'calculator'
+  >('restock');
   const [fullQtyInput, setFullQtyInput] = useState<string>('10');
   const [emptyQtyInput, setEmptyQtyInput] = useState<string>('10');
   const [movementNote, setMovementNote] = useState<string>('');
   const [movementDate, setMovementDate] = useState<string>('');
   const [savingStock, setSavingStock] = useState(false);
   const [stockError, setStockError] = useState<string | null>(null);
+  const [calcSelected, setCalcSelected] = useState<Record<string, boolean>>({});
+  const [calcQtyInputs, setCalcQtyInputs] = useState<Record<string, string>>({});
 
   const [editModalCyl, setEditModalCyl] = useState<Cylinder | null>(null);
   const [editForm, setEditForm] = useState({
@@ -106,7 +111,20 @@ export function InventoryView({
 
   const stockModalCyl = cylinders.find((c) => c.id === stockModalCylId) ?? null;
 
-  const openStockModal = (cyl: Cylinder | null, type: 'restock' | 'return_empty' | 'adjustment') => {
+  const initCalculatorState = (preselectId?: string | null) => {
+    const nextQty: Record<string, string> = {};
+    for (const c of cylinders) {
+      nextQty[c.id] = String(c.emptyCount);
+    }
+    setCalcQtyInputs(nextQty);
+    setCalcSelected(preselectId ? { [preselectId]: true } : {});
+  };
+
+  const openStockModal = (
+    cyl: Cylinder | null,
+    type: 'restock' | 'return_empty' | 'adjustment' | 'calculator',
+    preselectCalcId?: string | null
+  ) => {
     const target = cyl ?? cylinders[0] ?? null;
     if (!target) {
       setNewCylError(null);
@@ -118,7 +136,7 @@ export function InventoryView({
     setMovementType(type);
     setFullQtyInput(
       String(
-        type === 'restock'
+        type === 'restock' || type === 'calculator'
           ? target.emptyCount
           : type === 'adjustment'
             ? target.fullCount
@@ -127,7 +145,7 @@ export function InventoryView({
     );
     setEmptyQtyInput(
       String(
-        type === 'restock'
+        type === 'restock' || type === 'calculator'
           ? target.emptyCount
           : type === 'return_empty'
             ? 5
@@ -136,6 +154,7 @@ export function InventoryView({
     );
     setMovementNote('');
     setMovementDate('');
+    initCalculatorState(preselectCalcId);
   };
 
   const handleSelectStockCylinder = (cylId: string) => {
@@ -202,7 +221,7 @@ export function InventoryView({
 
   const handleSaveStock = async (e: FormEvent) => {
     e.preventDefault();
-    if (!stockModalCyl) return;
+    if (!stockModalCyl || movementType === 'calculator') return;
     setStockError(null);
 
     const validation = validateStockMovementForm({
@@ -247,6 +266,71 @@ export function InventoryView({
       setStockModalCylId(null);
     } catch (err) {
       setStockError(err instanceof Error ? err.message : 'Erro ao movimentar estoque.');
+    } finally {
+      setSavingStock(false);
+    }
+  };
+
+  const handleApplyCalculatorRestock = async () => {
+    setStockError(null);
+    const chosen = cylinders.filter((c) => Boolean(calcSelected[c.id]));
+    if (chosen.length === 0) {
+      setStockError('Selecione pelo menos um tipo de botijão na calculadora.');
+      return;
+    }
+
+    const entries: Array<{
+      cyl: Cylinder;
+      fullDelta: number;
+      emptyDelta: number;
+      note: string;
+    }> = [];
+
+    for (const cyl of chosen) {
+      const raw = calcQtyInputs[cyl.id] ?? String(cyl.emptyCount);
+      const parsed = parseStrictNumber(raw);
+      if (parsed === null || parsed < 0 || !Number.isInteger(parsed) || parsed > 10000) {
+        setStockError(`Informe uma quantidade inteira válida (0 a 10.000) para ${cyl.code}.`);
+        return;
+      }
+      if (parsed === 0) continue;
+      const usedEmpties = Math.min(parsed, cyl.emptyCount);
+      const acquisitionQty = parsed - usedEmpties;
+      const note =
+        acquisitionQty > 0
+          ? usedEmpties > 0
+            ? 'Reposição e Aquisição completa (Calculadora)'
+            : 'Aquisição completa (Calculadora)'
+          : 'Reposição de carga (Calculadora)';
+
+      entries.push({
+        cyl,
+        fullDelta: parsed,
+        emptyDelta: -usedEmpties,
+        note,
+      });
+    }
+
+    if (entries.length === 0) {
+      setStockError('Informe pelo menos 1 botijão com quantidade maior que zero para registrar.');
+      return;
+    }
+
+    setSavingStock(true);
+    try {
+      for (const item of entries) {
+        await adjustCylinderStock(
+          uid,
+          item.cyl,
+          'restock',
+          item.fullDelta,
+          item.emptyDelta,
+          item.note
+        );
+      }
+      setStockModalCylId(null);
+    } catch (err) {
+      setStockError(err instanceof Error ? err.message : 'Erro ao registrar reposição.');
     } finally {
       setSavingStock(false);
     }
@@ -720,13 +804,17 @@ export function InventoryView({
         )}
       </section>
 
-      {/* Stock Adjustment Modal */}
+      {/* Stock Adjustment & Calculator Modal */}
       {stockModalCyl && (
         <div className="fixed inset-0 z-50 bg-slate-950/40 dark:bg-slate-950/70 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl w-full max-w-md p-6 space-y-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <ArrowDownToLine className="w-4 h-4 text-orange-600 dark:text-orange-500" />
+                {movementType === 'calculator' ? (
+                  <Calculator className="w-4 h-4 text-orange-600 dark:text-orange-500" />
+                ) : (
+                  <ArrowDownToLine className="w-4 h-4 text-orange-600 dark:text-orange-500" />
+                )}
                 <h3 className="font-display text-lg font-semibold text-slate-900 dark:text-slate-100">
                   Adicionar / Movimentar Stock
                 </h3>
@@ -740,24 +828,7 @@ export function InventoryView({
               </button>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Tipo de Botijão
-              </label>
-              <select
-                value={stockModalCyl.id}
-                onChange={(e) => handleSelectStockCylinder(e.target.value)}
-                className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
-              >
-                {cylinders.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.code} — {c.name} (Cheios: {c.fullCount} | Vazios: {c.emptyCount})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
               <button
                 type="button"
                 onClick={() => {
@@ -766,7 +837,7 @@ export function InventoryView({
                   setFullQtyInput(String(stockModalCyl.emptyCount));
                   setEmptyQtyInput(String(stockModalCyl.emptyCount));
                 }}
-                className={`py-1.5 text-xs font-medium rounded-md cursor-pointer ${
+                className={`py-1.5 px-2 text-xs font-medium rounded-md whitespace-nowrap shrink-0 cursor-pointer ${
                   movementType === 'restock'
                     ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
@@ -782,7 +853,7 @@ export function InventoryView({
                   setFullQtyInput('0');
                   setEmptyQtyInput('5');
                 }}
-                className={`py-1.5 text-xs font-medium rounded-md cursor-pointer ${
+                className={`py-1.5 px-2 text-xs font-medium rounded-md whitespace-nowrap shrink-0 cursor-pointer ${
                   movementType === 'return_empty'
                     ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
@@ -798,13 +869,28 @@ export function InventoryView({
                   setFullQtyInput(String(stockModalCyl.fullCount));
                   setEmptyQtyInput(String(stockModalCyl.emptyCount));
                 }}
-                className={`py-1.5 text-xs font-medium rounded-md cursor-pointer ${
+                className={`py-1.5 px-2 text-xs font-medium rounded-md whitespace-nowrap shrink-0 cursor-pointer ${
                   movementType === 'adjustment'
                     ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                 }`}
               >
                 Balanço Direto
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setStockError(null);
+                  setMovementType('calculator');
+                }}
+                className={`py-1.5 px-2 text-xs font-medium rounded-md inline-flex items-center justify-center gap-1 whitespace-nowrap shrink-0 cursor-pointer ${
+                  movementType === 'calculator'
+                    ? 'bg-white dark:bg-slate-900 text-orange-600 dark:text-orange-400 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <Calculator className="w-3.5 h-3.5 shrink-0" />
+                <span>Calculadora</span>
               </button>
             </div>
 
@@ -817,195 +903,428 @@ export function InventoryView({
               </div>
             )}
 
-            <form onSubmit={handleSaveStock} noValidate className="space-y-4">
-              {movementType === 'restock' && (() => {
-                const parsedFull = parseStrictNumber(fullQtyInput) ?? 0;
-                const parsedEmpty = parseStrictNumber(emptyQtyInput) ?? 0;
-                const clampedEmpties = Math.min(stockModalCyl.emptyCount, Math.max(0, parsedEmpty));
-                const acquisitionQty = Math.max(0, parsedFull - clampedEmpties);
-                const isMixedAcquisition = parsedFull > clampedEmpties && clampedEmpties > 0;
-                const isPureAcquisition = parsedFull > 0 && clampedEmpties === 0;
-                return (
-                  <>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Botijões Cheios Recebidos (+)
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={10000}
-                        step={1}
-                        value={fullQtyInput}
-                        onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
-                        onChange={(e) => {
-                          const clean = sanitizeNumericText(e.target.value, false);
-                          setFullQtyInput(clean);
+            {movementType === 'calculator' ? (() => {
+              const calcRows = cylinders.map((c) => {
+                const checked = Boolean(calcSelected[c.id]);
+                const rawQty = calcQtyInputs[c.id] ?? String(c.emptyCount);
+                const parsedQty = parseStrictNumber(rawQty);
+                const validQty =
+                  parsedQty !== null && parsedQty >= 0 && Number.isInteger(parsedQty)
+                    ? parsedQty
+                    : 0;
+                const lineTotal = checked ? validQty * c.costPrice : 0;
+                const exceedsEmpties = checked && validQty > c.emptyCount;
+                return {
+                  cylinder: c,
+                  checked,
+                  rawQty,
+                  validQty,
+                  lineTotal,
+                  exceedsEmpties,
+                };
+              });
+
+              const selectedRows = calcRows.filter((r) => r.checked);
+              const totalUnits = selectedRows.reduce((acc, r) => acc + r.validQty, 0);
+              const totalCost = selectedRows.reduce((acc, r) => acc + r.lineTotal, 0);
+
+              return (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs text-slate-600 dark:text-slate-400">
+                      Selecione os tipos de botijões para calcular o custo total da reposição.
+                    </p>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
                           setStockError(null);
-                          const nextFull = parseStrictNumber(clean) ?? 0;
-                          setEmptyQtyInput(String(Math.min(nextFull, stockModalCyl.emptyCount)));
+                          const nextSel: Record<string, boolean> = {};
+                          const nextQty: Record<string, string> = {};
+                          for (const c of cylinders) {
+                            nextQty[c.id] = String(c.emptyCount);
+                            if (c.emptyCount > 0) nextSel[c.id] = true;
+                          }
+                          setCalcSelected(nextSel);
+                          setCalcQtyInputs(nextQty);
                         }}
-                        className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
-                      />
-                      {parsedFull > 0 && (
-                        <p
-                          className={`text-xs mt-1.5 px-2.5 py-1.5 rounded-md border font-medium ${
-                            isMixedAcquisition || isPureAcquisition
-                              ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-300'
-                              : 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-300'
-                          }`}
-                        >
-                          {isMixedAcquisition
-                            ? `Reposição e Aquisição completa: ${clampedEmpties} reposição (troca) + ${acquisitionQty} aquisição completa (com casco).`
-                            : isPureAcquisition
-                              ? `Aquisição completa: ${acquisitionQty} botijão(ões) com casco novo (sem vazios entregues).`
-                              : `Reposição: ${parsedFull} botijão(ões) em troca de ${clampedEmpties} vazio(s).`}
-                        </p>
-                      )}
+                        className="text-xs font-medium text-orange-600 dark:text-orange-400 hover:underline whitespace-nowrap cursor-pointer"
+                      >
+                        Com vazios
+                      </button>
+                      <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStockError(null);
+                          const nextSel: Record<string, boolean> = {};
+                          for (const c of cylinders) nextSel[c.id] = true;
+                          setCalcSelected(nextSel);
+                        }}
+                        className="text-xs font-medium text-slate-600 dark:text-slate-300 hover:underline whitespace-nowrap cursor-pointer"
+                      >
+                        Todos
+                      </button>
+                      <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStockError(null);
+                          setCalcSelected({});
+                        }}
+                        className="text-xs font-medium text-slate-500 dark:text-slate-400 hover:underline whitespace-nowrap cursor-pointer"
+                      >
+                        Limpar
+                      </button>
                     </div>
+                  </div>
+
+                  <div className="border border-slate-200 dark:border-slate-800 rounded-xl divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+                    {calcRows.map(({ cylinder: cyl, checked, rawQty, lineTotal, exceedsEmpties }) => (
+                      <div
+                        key={cyl.id}
+                        className={`px-3.5 py-2.5 flex items-center justify-between gap-3 transition-colors ${
+                          checked
+                            ? 'bg-orange-50/40 dark:bg-orange-950/20'
+                            : 'bg-white dark:bg-slate-950/60'
+                        }`}
+                      >
+                        <label className="flex items-start gap-2.5 min-w-0 flex-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              setStockError(null);
+                              const isNowChecked = e.target.checked;
+                              setCalcSelected((prev) => ({ ...prev, [cyl.id]: isNowChecked }));
+                              if (isNowChecked && (!rawQty || rawQty === '0') && cyl.emptyCount > 0) {
+                                setCalcQtyInputs((prev) => ({
+                                  ...prev,
+                                  [cyl.id]: String(cyl.emptyCount),
+                                }));
+                              }
+                            }}
+                            className="mt-1 rounded border-slate-300 dark:border-slate-600 text-orange-600 focus:ring-orange-600 shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-display text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                {cyl.code}
+                              </span>
+                              <span className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                                {cyl.name}
+                              </span>
+                            </div>
+                            <p className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-0.5">
+                              {cyl.emptyCount} vazios · Custo: {formatCurrency(cyl.costPrice, currency)}/un
+                            </p>
+                            {exceedsEmpties && (
+                              <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium mt-0.5">
+                                Acima dos vazios no pátio ({cyl.emptyCount})
+                              </p>
+                            )}
+                          </div>
+                        </label>
+
+                        <div className="flex items-center gap-2.5 shrink-0">
+                          <div className="w-20">
+                            <label className="sr-only" htmlFor={`calc-qty-${cyl.id}`}>
+                              Quantidade {cyl.code}
+                            </label>
+                            <input
+                              id={`calc-qty-${cyl.id}`}
+                              type="number"
+                              min={0}
+                              max={10000}
+                              step={1}
+                              value={rawQty}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                              onChange={(e) => {
+                                const clean = sanitizeNumericText(e.target.value, false);
+                                setCalcQtyInputs((prev) => ({ ...prev, [cyl.id]: clean }));
+                                setStockError(null);
+                                const parsed = parseStrictNumber(clean);
+                                if (parsed !== null && parsed > 0 && !checked) {
+                                  setCalcSelected((prev) => ({ ...prev, [cyl.id]: true }));
+                                }
+                              }}
+                              className={`w-full h-8 px-2 rounded-lg border text-right font-mono tabular-nums text-xs focus:outline-none focus:border-orange-600 ${
+                                checked
+                                  ? 'border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100'
+                                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-400 dark:text-slate-500'
+                              }`}
+                            />
+                          </div>
+
+                          <div className="w-24 text-right font-mono tabular-nums">
+                            <span
+                              className={`text-xs font-semibold ${
+                                checked
+                                  ? 'text-slate-900 dark:text-slate-100'
+                                  : 'text-slate-400 dark:text-slate-600'
+                              }`}
+                            >
+                              {formatCurrency(lineTotal, currency)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-400">
+                      <span>
+                        {selectedRows.length === 0
+                          ? 'Nenhum tipo selecionado'
+                          : selectedRows
+                              .map((r) => `${r.cylinder.code} (${r.validQty})`)
+                              .join(' + ')}
+                      </span>
+                      <span className="font-mono tabular-nums whitespace-nowrap shrink-0">
+                        {totalUnits} {totalUnits === 1 ? 'botijão' : 'botijões'}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-2 pt-1 border-t border-slate-200/80 dark:border-slate-800">
+                      <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Valor Total de Reposição
+                      </span>
+                      <span className="font-mono tabular-nums text-xl font-bold text-slate-900 dark:text-slate-100">
+                        {formatCurrency(totalCost, currency)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setStockModalCylId(null)}
+                      className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer whitespace-nowrap"
+                    >
+                      Fechar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingStock || totalUnits === 0}
+                      onClick={() => void handleApplyCalculatorRestock()}
+                      className="px-4 py-2 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                    >
+                      {savingStock ? 'Registrando...' : 'Confirmar Reposição no Stock'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })() : (
+              <>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Tipo de Botijão
+                  </label>
+                  <select
+                    value={stockModalCyl.id}
+                    onChange={(e) => handleSelectStockCylinder(e.target.value)}
+                    className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                  >
+                    {cylinders.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.code} — {c.name} (Cheios: {c.fullCount} | Vazios: {c.emptyCount})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <form onSubmit={handleSaveStock} noValidate className="space-y-4">
+                  {movementType === 'restock' && (() => {
+                    const parsedFull = parseStrictNumber(fullQtyInput) ?? 0;
+                    const parsedEmpty = parseStrictNumber(emptyQtyInput) ?? 0;
+                    const clampedEmpties = Math.min(stockModalCyl.emptyCount, Math.max(0, parsedEmpty));
+                    const acquisitionQty = Math.max(0, parsedFull - clampedEmpties);
+                    const isMixedAcquisition = parsedFull > clampedEmpties && clampedEmpties > 0;
+                    const isPureAcquisition = parsedFull > 0 && clampedEmpties === 0;
+                    return (
+                      <>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                            Botijões Cheios Recebidos (+)
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={10000}
+                            step={1}
+                            value={fullQtyInput}
+                            onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                            onChange={(e) => {
+                              const clean = sanitizeNumericText(e.target.value, false);
+                              setFullQtyInput(clean);
+                              setStockError(null);
+                              const nextFull = parseStrictNumber(clean) ?? 0;
+                              setEmptyQtyInput(String(Math.min(nextFull, stockModalCyl.emptyCount)));
+                            }}
+                            className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                          />
+                          {parsedFull > 0 && (
+                            <p
+                              className={`text-xs mt-1.5 px-2.5 py-1.5 rounded-md border font-medium ${
+                                isMixedAcquisition || isPureAcquisition
+                                  ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-300'
+                                  : 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-800 dark:text-emerald-300'
+                              }`}
+                            >
+                              {isMixedAcquisition
+                                ? `Reposição e Aquisição completa: ${clampedEmpties} reposição (troca) + ${acquisitionQty} aquisição completa (com casco).`
+                                : isPureAcquisition
+                                  ? `Aquisição completa: ${acquisitionQty} botijão(ões) com casco novo (sem vazios entregues).`
+                                  : `Reposição: ${parsedFull} botijão(ões) em troca de ${clampedEmpties} vazio(s).`}
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                            Cascos Vazios Entregues ao Fornecedor (-)
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={stockModalCyl.emptyCount}
+                            step={1}
+                            value={emptyQtyInput}
+                            onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                            onChange={(e) => {
+                              const clean = sanitizeNumericText(e.target.value, false);
+                              const parsed = parseStrictNumber(clean);
+                              if (parsed !== null && parsed > stockModalCyl.emptyCount) {
+                                setEmptyQtyInput(String(stockModalCyl.emptyCount));
+                              } else {
+                                setEmptyQtyInput(clean);
+                              }
+                              setStockError(null);
+                            }}
+                            className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                          />
+                          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono">
+                            Disponível no pátio: {stockModalCyl.emptyCount} vazios
+                          </p>
+                        </div>
+                      </>
+                    );
+                  })()}
+
+                  {movementType === 'return_empty' && (
                     <div>
                       <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                        Cascos Vazios Entregues ao Fornecedor (-)
+                        Cascos Vazios Devolvidos ao Pátio (+)
                       </label>
                       <input
                         type="number"
-                        min={0}
-                        max={stockModalCyl.emptyCount}
+                        min={1}
+                        max={10000}
                         step={1}
                         value={emptyQtyInput}
                         onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
                         onChange={(e) => {
-                          const clean = sanitizeNumericText(e.target.value, false);
-                          const parsed = parseStrictNumber(clean);
-                          if (parsed !== null && parsed > stockModalCyl.emptyCount) {
-                            setEmptyQtyInput(String(stockModalCyl.emptyCount));
-                          } else {
-                            setEmptyQtyInput(clean);
-                          }
+                          setEmptyQtyInput(sanitizeNumericText(e.target.value, false));
                           setStockError(null);
                         }}
                         className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                       />
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-mono">
-                        Disponível no pátio: {stockModalCyl.emptyCount} vazios
-                      </p>
                     </div>
-                  </>
-                );
-              })()}
+                  )}
 
-              {movementType === 'return_empty' && (
-                <div>
-                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Cascos Vazios Devolvidos ao Pátio (+)
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={10000}
-                    step={1}
-                    value={emptyQtyInput}
-                    onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
-                    onChange={(e) => {
-                      setEmptyQtyInput(sanitizeNumericText(e.target.value, false));
-                      setStockError(null);
-                    }}
-                    className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
-                  />
-                </div>
-              )}
+                  {movementType === 'adjustment' && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Total Cheios Atual
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100000}
+                          step={1}
+                          value={fullQtyInput}
+                          onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                          onChange={(e) => {
+                            setFullQtyInput(sanitizeNumericText(e.target.value, false));
+                            setStockError(null);
+                          }}
+                          className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                          Total Vazios Atual
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100000}
+                          step={1}
+                          value={emptyQtyInput}
+                          onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                          onChange={(e) => {
+                            setEmptyQtyInput(sanitizeNumericText(e.target.value, false));
+                            setStockError(null);
+                          }}
+                          className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                        />
+                      </div>
+                    </div>
+                  )}
 
-              {movementType === 'adjustment' && (
-                <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Total Cheios Atual
+                      Observação (ex.: Nota Fiscal / Caminhão)
                     </label>
                     <input
-                      type="number"
-                      min={0}
-                      max={100000}
-                      step={1}
-                      value={fullQtyInput}
-                      onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                      type="text"
+                      maxLength={FIELD_LIMITS.MOVEMENT_NOTE}
+                      value={movementNote}
                       onChange={(e) => {
-                        setFullQtyInput(sanitizeNumericText(e.target.value, false));
+                        setMovementNote(e.target.value);
                         setStockError(null);
                       }}
-                      className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                      placeholder="Ex.: Carga manhã NF 4021"
+                      className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
                     />
                   </div>
+
                   <div>
                     <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                      Total Vazios Atual
+                      Data da movimentação (opcional — padrão: agora)
                     </label>
                     <input
-                      type="number"
-                      min={0}
-                      max={100000}
-                      step={1}
-                      value={emptyQtyInput}
-                      onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                      type="date"
+                      max={getTodayIsoDate()}
+                      value={movementDate}
                       onChange={(e) => {
-                        setEmptyQtyInput(sanitizeNumericText(e.target.value, false));
+                        setMovementDate(e.target.value);
                         setStockError(null);
                       }}
-                      className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+                      className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                     />
                   </div>
-                </div>
-              )}
 
-              <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Observação (ex.: Nota Fiscal / Caminhão)
-                </label>
-                <input
-                  type="text"
-                  maxLength={FIELD_LIMITS.MOVEMENT_NOTE}
-                  value={movementNote}
-                  onChange={(e) => {
-                    setMovementNote(e.target.value);
-                    setStockError(null);
-                  }}
-                  placeholder="Ex.: Carga manhã NF 4021"
-                  className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Data da movimentação (opcional — padrão: agora)
-                </label>
-                <input
-                  type="date"
-                  max={getTodayIsoDate()}
-                  value={movementDate}
-                  onChange={(e) => {
-                    setMovementDate(e.target.value);
-                    setStockError(null);
-                  }}
-                  className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setStockModalCylId(null)}
-                  className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={savingStock}
-                  className="px-4 py-2 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 cursor-pointer"
-                >
-                  {savingStock ? 'Salvando...' : 'Confirmar Entrada'}
-                </button>
-              </div>
-            </form>
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setStockModalCylId(null)}
+                      className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={savingStock}
+                      className="px-4 py-2 rounded-lg bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 cursor-pointer"
+                    >
+                      {savingStock ? 'Salvando...' : 'Confirmar Entrada'}
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
           </div>
         </div>
       )}
