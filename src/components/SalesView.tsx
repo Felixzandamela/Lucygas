@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Check, Download, Eye, FileText, List, Map as MapIcon, Printer, Search, Trash2, TrendingUp, Truck, X, XCircle } from 'lucide-react';
+import { Check, Eye, FileText, List, Map as MapIcon, Printer, Search, Trash2, TrendingUp, Truck, X, XCircle } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { formatCurrency, formatDateTime, getRecordDate, getRecordMillis, getRecordTimestamp } from '../lib/formatters';
 import { deleteSaleRecord, markSalePaid, updateSaleDelivery } from '../services/depotService';
@@ -193,86 +193,6 @@ export function SalesView({
 
   const getPeriodSuffix = () =>
     period === 'custom' ? `${customStart}-a-${customEnd}` : period.replace('_', '-');
-
-  const handleExportCsv = () => {
-    if (filteredSales.length === 0) return;
-
-    const escapeCell = (val: string) => `"${val.replace(/"/g, '""')}"`;
-    const header = [
-      'Pedido',
-      'Data',
-      'Cliente',
-      'Telefone',
-      'Endereco',
-      'Botijao',
-      'Quantidade',
-      'Modalidade',
-      'ValorUnitario',
-      'TaxaEntrega',
-      'Desconto',
-      'Total',
-      'CustoBotijas',
-      'LucroBotijas',
-      'FormaPagamento',
-      'StatusPagamento',
-      'StatusEntrega',
-      'Entregador',
-      'Observacoes',
-    ];
-
-    const rows = filteredSales.map((s) => {
-      const cost = getSaleCost(s);
-      const profit = getSaleProfit(s);
-      return [
-        escapeCell(s.orderNumber),
-        escapeCell(formatDateTime(getRecordTimestamp(s))),
-        escapeCell(s.customerName),
-        escapeCell(s.customerPhone || ''),
-        escapeCell(s.deliveryAddress || 'Retirada no Balcão'),
-        escapeCell(s.cylinderCode),
-        String(s.quantity),
-        escapeCell(s.saleMode === 'exchange' ? 'Troca de Casco' : 'Com Casco Novo'),
-        s.unitPrice.toFixed(2),
-        s.deliveryFee.toFixed(2),
-        s.discount.toFixed(2),
-        s.totalAmount.toFixed(2),
-        cost.toFixed(2),
-        profit.toFixed(2),
-        escapeCell(PAYMENT_METHOD_LABELS[s.paymentMethod] ?? s.paymentMethod),
-        escapeCell(s.paymentStatus === 'paid' ? 'Pago' : 'Em Aberto'),
-        escapeCell(DELIVERY_STATUS_LABELS[s.deliveryStatus]),
-        escapeCell(s.fulfillmentType === 'pickup' ? 'Balcão' : s.driverName || ''),
-        escapeCell(s.notes || ''),
-      ];
-    });
-
-    const summaryRows: string[][] = [
-      [],
-      ['RESUMO DO PERIODO', escapeCell(getPeriodLabel())],
-      ['Pedidos', String(filteredSummary.count)],
-      ['Botijoes Vendidos', String(filteredSummary.totalUnits)],
-      ['Valor Bruto', filteredSummary.totalValue.toFixed(2)],
-      ['Custo das Botijas (CMV)', filteredSummary.totalCost.toFixed(2)],
-      ['Lucro das Botijas Vendidas', filteredSummary.cylindersProfit.toFixed(2)],
-      ...(!hasNarrowFilter
-        ? [['Despesas Operacionais do Periodo', periodExpenses.toFixed(2)]]
-        : []),
-      ['Resultado Liquido Estimado', filteredSummary.estimatedNetResult.toFixed(2)],
-    ];
-
-    const csv = [
-      header.join(';'),
-      ...rows.map((r) => r.join(';')),
-      ...summaryRows.map((r) => r.join(';')),
-    ].join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `relatorio-vendas-${getPeriodSuffix()}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   const handleExportPdf = () => {
     if (filteredSales.length === 0) return;
@@ -769,16 +689,6 @@ export function SalesView({
 
             <button
               type="button"
-              onClick={handleExportCsv}
-              disabled={filteredSales.length === 0}
-              className="h-10 px-3.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Exportar CSV</span>
-            </button>
-
-            <button
-              type="button"
               onClick={handleExportPdf}
               disabled={filteredSales.length === 0}
               className="h-10 px-4 rounded-lg bg-slate-900 dark:bg-orange-600 text-white text-xs font-semibold hover:bg-slate-800 dark:hover:bg-orange-700 disabled:opacity-50 inline-flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
@@ -808,7 +718,13 @@ export function SalesView({
               <input
                 type="date"
                 value={customStart}
-                onChange={(e) => setCustomStart(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCustomStart(val);
+                  if (val && customEnd && val > customEnd) {
+                    setCustomEnd(val);
+                  }
+                }}
                 className="h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-mono text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
               />
             </div>
@@ -817,7 +733,13 @@ export function SalesView({
               <input
                 type="date"
                 value={customEnd}
-                onChange={(e) => setCustomEnd(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setCustomEnd(val);
+                  if (val && customStart && val < customStart) {
+                    setCustomStart(val);
+                  }
+                }}
                 className="h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-mono text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
               />
             </div>

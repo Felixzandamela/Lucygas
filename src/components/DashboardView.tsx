@@ -1,4 +1,4 @@
-import { ArrowRight, Plus, Truck, Package } from 'lucide-react';
+import { ArrowRight, Package, Plus, TrendingUp, Truck, Wallet } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import cylinderStudioImg from '../assets/images/gas_cylinder_studio_1794631289411.jpg';
 import { formatCurrency, formatDateTime, getRecordDate, getRecordMillis, getRecordTimestamp } from '../lib/formatters';
@@ -107,45 +107,77 @@ export function DashboardView({
     <div className="space-y-8">
       {/* KPI Strip */}
       <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Faturamento Hoje</p>
-          <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-2">
-            {formatCurrency(metrics.todayRevenue, currency)}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-mono tabular-nums">
-            {metrics.todayCount} pedidos · {metrics.todayUnits} botijões
-          </p>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Faturamento Hoje</p>
+            <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-2">
+              {formatCurrency(metrics.todayRevenue, currency)}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-mono tabular-nums">
+              {metrics.todayCount} pedidos · {metrics.todayUnits} botijões
+            </p>
+          </div>
+          <div
+            aria-hidden="true"
+            className="w-11 h-11 rounded-full bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 flex items-center justify-center shrink-0"
+          >
+            <TrendingUp className="w-5 h-5" />
+          </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Botijões no Pátio</p>
-          <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-2">
-            {metrics.totalFull}{' '}
-            <span className="text-sm font-normal text-slate-500 dark:text-slate-400">cheios</span>
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-mono tabular-nums">
-            {metrics.totalEmpty} cascos vazios disponíveis
-          </p>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Botijões no Pátio</p>
+            <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-2">
+              {metrics.totalFull}{' '}
+              <span className="text-sm font-normal text-slate-500 dark:text-slate-400">cheios</span>
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-mono tabular-nums">
+              {metrics.totalEmpty} cascos vazios disponíveis
+            </p>
+          </div>
+          <div
+            aria-hidden="true"
+            className="w-11 h-11 rounded-full bg-orange-100 dark:bg-orange-500/15 text-orange-700 dark:text-orange-400 flex items-center justify-center shrink-0"
+          >
+            <Package className="w-5 h-5" />
+          </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Entregas em Aberto</p>
-          <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-2">
-            {metrics.openDeliveries.length}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
-            {metrics.openDeliveries.filter((d) => d.deliveryStatus === 'in_route').length} em rota neste momento
-          </p>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Entregas em Aberto</p>
+            <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-2">
+              {metrics.openDeliveries.length}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
+              {metrics.openDeliveries.filter((d) => d.deliveryStatus === 'in_route').length} em rota neste momento
+            </p>
+          </div>
+          <div
+            aria-hidden="true"
+            className="w-11 h-11 rounded-full bg-sky-100 dark:bg-sky-500/15 text-sky-700 dark:text-sky-400 flex items-center justify-center shrink-0"
+          >
+            <Truck className="w-5 h-5" />
+          </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Saldo a Receber (Fiado)</p>
-          <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-2">
-            {formatCurrency(metrics.totalReceivable, currency)}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
-            Pedidos entregues aguardando quitação
-          </p>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Saldo a Receber (Fiado)</p>
+            <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-2">
+              {formatCurrency(metrics.totalReceivable, currency)}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
+              Pedidos entregues aguardando quitação
+            </p>
+          </div>
+          <div
+            aria-hidden="true"
+            className="w-11 h-11 rounded-full bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-400 flex items-center justify-center shrink-0"
+          >
+            <Wallet className="w-5 h-5" />
+          </div>
         </div>
       </section>
 

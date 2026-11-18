@@ -3,6 +3,14 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import cylinderStudioImg from '../assets/images/gas_cylinder_studio_1794631289411.jpg';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { formatCurrency } from '../lib/formatters';
+import {
+  getTodayIsoDate,
+  parseStrictNumber,
+  preventNegativeNumberKeys,
+  sanitizeNumericText,
+  validateCustomerForm,
+  validateSaleOrderForm,
+} from '../lib/validation';
 import { createCustomer, createSaleTransaction } from '../services/depotService';
 import {
   type AppSection,
@@ -44,7 +52,7 @@ export function PosView({
   const isOnline = useOnlineStatus();
   const [selectedCylinderId, setSelectedCylinderId] = useState<string>('');
   const [saleMode, setSaleMode] = useState<SaleMode>('exchange');
-  const [quantity, setQuantity] = useState<number>(1);
+  const [quantityInput, setQuantityInput] = useState<string>('1');
   const [fulfillmentType, setFulfillmentType] = useState<FulfillmentType>('pickup');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
   const [customerQuery, setCustomerQuery] = useState<string>('');
@@ -52,8 +60,10 @@ export function PosView({
   const [walkInPhone, setWalkInPhone] = useState<string>('');
   const [deliveryAddress, setDeliveryAddress] = useState<string>('');
   const [driverName, setDriverName] = useState<string>('');
-  const [deliveryFee, setDeliveryFee] = useState<number>(depot?.deliveryFee ?? 0);
-  const [discount, setDiscount] = useState<number>(0);
+  const [deliveryFeeInput, setDeliveryFeeInput] = useState<string>(() =>
+    String(depot?.deliveryFee ?? 0)
+  );
+  const [discountInput, setDiscountInput] = useState<string>('0');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
   const [notes, setNotes] = useState<string>('');
   const [saleDate, setSaleDate] = useState<string>('');
@@ -69,6 +79,7 @@ export function PosView({
   const [newCustPhone, setNewCustPhone] = useState('');
   const [newCustAddress, setNewCustAddress] = useState('');
   const [newCustNeighborhood, setNewCustNeighborhood] = useState('');
+  const [quickCustError, setQuickCustError] = useState<string | null>(null);
   const [creatingCust, setCreatingCust] = useState(false);
 
   useEffect(() => {
@@ -80,7 +91,7 @@ export function PosView({
 
   useEffect(() => {
     if (depot) {
-      setDeliveryFee(depot.deliveryFee);
+      setDeliveryFeeInput(String(depot.deliveryFee));
       if (!driverName && depot.drivers.length > 0) {
         setDriverName(depot.drivers[0]);
       }
@@ -123,17 +134,26 @@ export function PosView({
       .slice(0, 6);
   }, [customers, customerQuery]);
 
+  const parsedQuantity = parseStrictNumber(quantityInput);
+  const displayQuantity =
+    parsedQuantity !== null && Number.isInteger(parsedQuantity) && parsedQuantity >= 1
+      ? parsedQuantity
+      : 0;
+  const parsedDeliveryFee = Math.max(0, parseStrictNumber(deliveryFeeInput) ?? 0);
+  const parsedDiscount = Math.max(0, parseStrictNumber(discountInput) ?? 0);
+
   const unitPrice = selectedCylinder
     ? saleMode === 'exchange'
       ? selectedCylinder.salePrice
       : selectedCylinder.salePrice + selectedCylinder.shellPrice
     : 0;
 
-  const subtotal = unitPrice * quantity;
-  const activeDeliveryFee = fulfillmentType === 'delivery' ? deliveryFee : 0;
-  const finalTotal = Math.max(0, subtotal + activeDeliveryFee - discount);
+  const subtotal = unitPrice * displayQuantity;
+  const activeDeliveryFee = fulfillmentType === 'delivery' ? parsedDeliveryFee : 0;
+  const finalTotal = Math.max(0, subtotal + activeDeliveryFee - parsedDiscount);
 
   const handleSelectCustomer = (customer: Customer | null) => {
+    setErrorMsg(null);
     if (!customer) {
       setSelectedCustomerId('');
       setDeliveryAddress('');
@@ -145,25 +165,35 @@ export function PosView({
 
   const handleCreateQuickCustomer = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newCustName.trim()) return;
+    setQuickCustError(null);
+
+    const validation = validateCustomerForm({
+      name: newCustName,
+      phone: newCustPhone,
+      address: newCustAddress,
+      neighborhood: newCustNeighborhood,
+      notes: '',
+    });
+    if (!validation.ok) {
+      setQuickCustError(validation.error);
+      return;
+    }
+
     setCreatingCust(true);
     try {
-      const newId = await createCustomer(uid, {
-        name: newCustName,
-        phone: newCustPhone,
-        address: newCustAddress,
-        neighborhood: newCustNeighborhood,
-        notes: '',
-      });
+      const newId = await createCustomer(uid, validation.data);
       setSelectedCustomerId(newId);
-      setDeliveryAddress([newCustAddress, newCustNeighborhood].filter(Boolean).join(' - '));
+      setDeliveryAddress(
+        [validation.data.address, validation.data.neighborhood].filter(Boolean).join(' - ')
+      );
       setShowNewCustomerModal(false);
       setNewCustName('');
       setNewCustPhone('');
       setNewCustAddress('');
       setNewCustNeighborhood('');
+      setQuickCustError(null);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao salvar cliente.');
+      setQuickCustError(err instanceof Error ? err.message : 'Erro ao salvar cliente.');
     } finally {
       setCreatingCust(false);
     }
@@ -171,46 +201,53 @@ export function PosView({
 
   const handleSubmitOrder = async (e: FormEvent) => {
     e.preventDefault();
-    if (!selectedCylinder) return;
     setErrorMsg(null);
     setLastSale(null);
 
-    if (selectedCylinder.fullCount < quantity) {
-      setErrorMsg(
-        `Estoque insuficiente de ${selectedCylinder.code}. Disponível: ${selectedCylinder.fullCount} unidades.`
-      );
-      return;
-    }
-
-    if (fulfillmentType === 'delivery' && !deliveryAddress.trim()) {
-      setErrorMsg('Informe o endereço de entrega ou altere para Retirada no Balcão.');
+    const validation = validateSaleOrderForm({
+      hasSelectedCylinder: Boolean(selectedCylinder),
+      cylinderCode: selectedCylinder?.code ?? '',
+      availableFullCount: selectedCylinder?.fullCount ?? 0,
+      unitPrice,
+      quantity: quantityInput,
+      discount: discountInput,
+      deliveryFee: deliveryFeeInput,
+      fulfillmentType,
+      hasSelectedCustomer: Boolean(selectedCustomer),
+      walkInName,
+      walkInPhone,
+      deliveryAddress,
+      notes,
+      saleDate,
+    });
+    if (!validation.ok || !selectedCylinder) {
+      setErrorMsg(validation.ok ? 'Selecione um tipo de botijão.' : validation.error);
       return;
     }
 
     setSubmitting(true);
     try {
-      const occurredAt = saleDate ? new Date(`${saleDate}T12:00:00`) : undefined;
       const createdSale = await createSaleTransaction({
         uid,
         cylinder: selectedCylinder,
         customer: selectedCustomer,
-        walkInName,
-        walkInPhone,
-        deliveryAddress,
+        walkInName: validation.data.walkInName,
+        walkInPhone: walkInPhone.trim(),
+        deliveryAddress: deliveryAddress.trim(),
         saleMode,
-        quantity,
-        discount,
-        deliveryFee: activeDeliveryFee,
+        quantity: validation.data.quantity,
+        discount: validation.data.discount,
+        deliveryFee: validation.data.deliveryFee,
         fulfillmentType,
         driverName,
         paymentMethod,
-        notes,
-        occurredAt,
+        notes: notes.trim(),
+        occurredAt: validation.data.occurredAt,
       });
       setLastSale(createdSale);
       setReceiptSale(createdSale);
-      setQuantity(1);
-      setDiscount(0);
+      setQuantityInput('1');
+      setDiscountInput('0');
       setNotes('');
       setSaleDate('');
     } catch (err) {
@@ -265,7 +302,7 @@ export function PosView({
         </div>
       )}
 
-      <form onSubmit={handleSubmitOrder} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <form onSubmit={handleSubmitOrder} noValidate className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Column: Builder */}
         <div className="lg:col-span-8 space-y-6">
           {/* 1. Product Selection */}
@@ -318,7 +355,10 @@ export function PosView({
                     disabled={outOfStock}
                     onClick={() => {
                       setSelectedCylinderId(cyl.id);
-                      if (quantity > cyl.fullCount) setQuantity(Math.max(1, cyl.fullCount));
+                      setErrorMsg(null);
+                      if (displayQuantity > cyl.fullCount) {
+                        setQuantityInput(String(Math.max(1, cyl.fullCount)));
+                      }
                     }}
                     className={`text-left p-4 rounded-xl border transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                       isSelected
@@ -362,12 +402,16 @@ export function PosView({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-100 dark:border-slate-800">
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                  Quantidade
+                  Quantidade *
                 </label>
                 <div className="inline-flex items-center border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950">
                   <button
                     type="button"
-                    onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+                    onClick={() => {
+                      setErrorMsg(null);
+                      const next = Math.max(1, (parsedQuantity ?? 1) - 1);
+                      setQuantityInput(String(next));
+                    }}
                     className="w-10 h-10 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-l-lg cursor-pointer"
                     aria-label="Diminuir quantidade"
                   >
@@ -376,27 +420,35 @@ export function PosView({
                   <input
                     type="number"
                     min={1}
-                    max={selectedCylinder?.fullCount || 500}
-                    value={quantity}
+                    max={Math.min(500, selectedCylinder?.fullCount || 500)}
+                    step={1}
+                    value={quantityInput}
+                    onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
                     onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      setQuantity(Number.isNaN(val) ? 1 : Math.max(1, val));
+                      setErrorMsg(null);
+                      setQuantityInput(sanitizeNumericText(e.target.value, false));
                     }}
                     className="w-16 text-center font-mono tabular-nums text-sm font-semibold text-slate-900 dark:text-slate-100 bg-transparent focus:outline-none"
                   />
                   <button
                     type="button"
-                    onClick={() =>
-                      setQuantity((q) =>
-                        Math.min(selectedCylinder?.fullCount || 500, q + 1)
-                      )
-                    }
+                    onClick={() => {
+                      setErrorMsg(null);
+                      const maxAllowed = Math.min(500, selectedCylinder?.fullCount || 500);
+                      const next = Math.min(maxAllowed, Math.max(1, (parsedQuantity ?? 0) + 1));
+                      setQuantityInput(String(next));
+                    }}
                     className="w-10 h-10 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-r-lg cursor-pointer"
                     aria-label="Aumentar quantidade"
                   >
                     <Plus className="w-4 h-4" />
                   </button>
                 </div>
+                {selectedCylinder && parsedQuantity !== null && parsedQuantity > selectedCylinder.fullCount && (
+                  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                    Disponível em estoque: {selectedCylinder.fullCount} unidade(s).
+                  </p>
+                )}
               </div>
 
               <div>
@@ -406,11 +458,21 @@ export function PosView({
                 <input
                   type="number"
                   min={0}
+                  max={1000000}
                   step="0.50"
-                  value={discount}
-                  onChange={(e) => setDiscount(Math.max(0, Number(e.target.value) || 0))}
+                  value={discountInput}
+                  onKeyDown={(e) => preventNegativeNumberKeys(e, true)}
+                  onChange={(e) => {
+                    setErrorMsg(null);
+                    setDiscountInput(sanitizeNumericText(e.target.value, true));
+                  }}
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                 />
+                {parsedDiscount > subtotal + activeDeliveryFee && (
+                  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                    O desconto não pode exceder o total do pedido.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -428,7 +490,10 @@ export function PosView({
               </div>
               <button
                 type="button"
-                onClick={() => setShowNewCustomerModal(true)}
+                onClick={() => {
+                  setQuickCustError(null);
+                  setShowNewCustomerModal(true);
+                }}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap cursor-pointer"
               >
                 <UserPlus className="w-3.5 h-3.5" />
@@ -511,13 +576,16 @@ export function PosView({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Nome do Cliente
+                    Nome do Cliente *
                   </label>
                   <input
                     type="text"
                     maxLength={FIELD_LIMITS.CUSTOMER_NAME}
                     value={walkInName}
-                    onChange={(e) => setWalkInName(e.target.value)}
+                    onChange={(e) => {
+                      setWalkInName(e.target.value);
+                      setErrorMsg(null);
+                    }}
                     required
                     className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                   />
@@ -542,13 +610,16 @@ export function PosView({
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 pt-2 border-t border-slate-100 dark:border-slate-800">
                 <div className="sm:col-span-6">
                   <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Endereço de Entrega
+                    Endereço de Entrega *
                   </label>
                   <input
                     type="text"
                     maxLength={FIELD_LIMITS.ADDRESS}
                     value={deliveryAddress}
-                    onChange={(e) => setDeliveryAddress(e.target.value)}
+                    onChange={(e) => {
+                      setDeliveryAddress(e.target.value);
+                      setErrorMsg(null);
+                    }}
                     placeholder="Rua, número, complemento e bairro"
                     className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
                   />
@@ -577,9 +648,14 @@ export function PosView({
                   <input
                     type="number"
                     min={0}
+                    max={100000}
                     step="0.50"
-                    value={deliveryFee}
-                    onChange={(e) => setDeliveryFee(Math.max(0, Number(e.target.value) || 0))}
+                    value={deliveryFeeInput}
+                    onKeyDown={(e) => preventNegativeNumberKeys(e, true)}
+                    onChange={(e) => {
+                      setErrorMsg(null);
+                      setDeliveryFeeInput(sanitizeNumericText(e.target.value, true));
+                    }}
                     className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                   />
                 </div>
@@ -628,9 +704,12 @@ export function PosView({
                 </label>
                 <input
                   type="date"
-                  max={new Date().toISOString().slice(0, 10)}
+                  max={getTodayIsoDate()}
                   value={saleDate}
-                  onChange={(e) => setSaleDate(e.target.value)}
+                  onChange={(e) => {
+                    setSaleDate(e.target.value);
+                    setErrorMsg(null);
+                  }}
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                 />
               </div>
@@ -665,7 +744,7 @@ export function PosView({
             <div className="min-w-0">
               <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Resumo do Pedido</p>
               <p className="font-display text-lg font-bold text-slate-900 dark:text-slate-100 truncate">
-                {selectedCylinder ? `${quantity}x ${selectedCylinder.code}` : 'Selecione um item'}
+                {selectedCylinder ? `${displayQuantity}x ${selectedCylinder.code}` : 'Selecione um item'}
               </p>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 {saleMode === 'exchange' ? 'Recarga com troca de casco' : 'Botijão completo (com casco)'}
@@ -677,7 +756,7 @@ export function PosView({
             <div className="flex items-center justify-between">
               <dt className="text-slate-600 dark:text-slate-400">Cliente</dt>
               <dd className="font-medium text-slate-900 dark:text-slate-100 truncate max-w-[180px]">
-                {selectedCustomer ? selectedCustomer.name : walkInName || 'Cliente Balcão'}
+                {selectedCustomer ? selectedCustomer.name : walkInName.trim() || 'Cliente Balcão'}
               </dd>
             </div>
             <div className="flex items-center justify-between">
@@ -694,7 +773,7 @@ export function PosView({
             </div>
 
             <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
-              <dt className="text-slate-600 dark:text-slate-400">Subtotal ({quantity}x)</dt>
+              <dt className="text-slate-600 dark:text-slate-400">Subtotal ({displayQuantity}x)</dt>
               <dd className="font-mono tabular-nums text-slate-900 dark:text-slate-100">
                 {formatCurrency(subtotal, currency)}
               </dd>
@@ -705,10 +784,10 @@ export function PosView({
                 {formatCurrency(activeDeliveryFee, currency)}
               </dd>
             </div>
-            {discount > 0 && (
+            {parsedDiscount > 0 && (
               <div className="flex items-center justify-between text-emerald-700 dark:text-emerald-400">
                 <dt>Desconto</dt>
-                <dd className="font-mono tabular-nums">- {formatCurrency(discount, currency)}</dd>
+                <dd className="font-mono tabular-nums">- {formatCurrency(parsedDiscount, currency)}</dd>
               </div>
             )}
 
@@ -725,14 +804,14 @@ export function PosView({
               <div className="flex justify-between">
                 <span>Cheios após venda:</span>
                 <span className="font-semibold text-slate-900 dark:text-slate-100">
-                  {selectedCylinder.fullCount} → {Math.max(0, selectedCylinder.fullCount - quantity)}
+                  {selectedCylinder.fullCount} → {Math.max(0, selectedCylinder.fullCount - displayQuantity)}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span>Cascos vazios após venda:</span>
                 <span className="font-semibold text-slate-900 dark:text-slate-100">
                   {selectedCylinder.emptyCount} →{' '}
-                  {selectedCylinder.emptyCount + (saleMode === 'exchange' ? quantity : 0)}
+                  {selectedCylinder.emptyCount + (saleMode === 'exchange' ? displayQuantity : 0)}
                 </span>
               </div>
             </div>
@@ -740,7 +819,7 @@ export function PosView({
 
           <button
             type="submit"
-            disabled={submitting || !selectedCylinder || selectedCylinder.fullCount < quantity}
+            disabled={submitting || !selectedCylinder || selectedCylinder.fullCount === 0}
             className="w-full py-3 px-4 rounded-lg bg-orange-600 text-white text-sm font-semibold hover:bg-orange-700 disabled:opacity-50 transition-colors cursor-pointer"
           >
             {submitting ? 'Registrando venda...' : 'Finalizar Venda'}
@@ -764,7 +843,15 @@ export function PosView({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <form onSubmit={handleCreateQuickCustomer} className="space-y-3">
+            {quickCustError && (
+              <div
+                role="alert"
+                className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-lg px-3 py-2 text-xs text-red-800 dark:text-red-300 font-medium"
+              >
+                {quickCustError}
+              </div>
+            )}
+            <form onSubmit={handleCreateQuickCustomer} noValidate className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Nome *</label>
                 <input
@@ -772,7 +859,10 @@ export function PosView({
                   required
                   maxLength={FIELD_LIMITS.CUSTOMER_NAME}
                   value={newCustName}
-                  onChange={(e) => setNewCustName(e.target.value)}
+                  onChange={(e) => {
+                    setNewCustName(e.target.value);
+                    setQuickCustError(null);
+                  }}
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                 />
               </div>

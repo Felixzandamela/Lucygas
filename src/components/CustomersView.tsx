@@ -2,6 +2,12 @@ import { Edit3, Plus, Search, ShoppingBag, Trash2, Users, Wallet, X } from 'luci
 import { useMemo, useState, type FormEvent } from 'react';
 import { formatCurrency } from '../lib/formatters';
 import {
+  preventNegativeNumberKeys,
+  sanitizeNumericText,
+  validateCreditPaymentForm,
+  validateCustomerForm,
+} from '../lib/validation';
+import {
   createCustomer,
   removeCustomer,
   settleCustomerCredit,
@@ -35,9 +41,11 @@ export function CustomersView({
     notes: '',
   });
   const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const [creditTarget, setCreditTarget] = useState<Customer | null>(null);
-  const [creditPayAmount, setCreditPayAmount] = useState<number>(0);
+  const [creditPayAmountInput, setCreditPayAmountInput] = useState<string>('0');
+  const [creditError, setCreditError] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -53,12 +61,14 @@ export function CustomersView({
 
   const openNewModal = () => {
     setEditingCustomer(null);
+    setFormError(null);
     setForm({ name: '', phone: '', address: '', neighborhood: '', notes: '' });
     setShowFormModal(true);
   };
 
   const openEditModal = (cust: Customer) => {
     setEditingCustomer(cust);
+    setFormError(null);
     setForm({
       name: cust.name,
       phone: cust.phone,
@@ -71,15 +81,24 @@ export function CustomersView({
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
-    if (!form.name.trim()) return;
+    setFormError(null);
+
+    const validation = validateCustomerForm(form);
+    if (!validation.ok) {
+      setFormError(validation.error);
+      return;
+    }
+
     setSaving(true);
     try {
       if (editingCustomer) {
-        await updateCustomerProfile(uid, editingCustomer.id, form);
+        await updateCustomerProfile(uid, editingCustomer.id, validation.data);
       } else {
-        await createCustomer(uid, form);
+        await createCustomer(uid, validation.data);
       }
       setShowFormModal(false);
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Erro ao salvar cliente.');
     } finally {
       setSaving(false);
     }
@@ -87,11 +106,24 @@ export function CustomersView({
 
   const handlePayCredit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!creditTarget || creditPayAmount <= 0) return;
+    if (!creditTarget) return;
+    setCreditError(null);
+
+    const validation = validateCreditPaymentForm(
+      creditPayAmountInput,
+      creditTarget.creditBalance
+    );
+    if (!validation.ok) {
+      setCreditError(validation.error);
+      return;
+    }
+
     setSaving(true);
     try {
-      await settleCustomerCredit(uid, creditTarget, creditPayAmount);
+      await settleCustomerCredit(uid, creditTarget, validation.data);
       setCreditTarget(null);
+    } catch (err) {
+      setCreditError(err instanceof Error ? err.message : 'Erro ao registrar pagamento.');
     } finally {
       setSaving(false);
     }
@@ -214,7 +246,8 @@ export function CustomersView({
                             type="button"
                             onClick={() => {
                               setCreditTarget(cust);
-                              setCreditPayAmount(cust.creditBalance);
+                              setCreditPayAmountInput(String(cust.creditBalance));
+                              setCreditError(null);
                             }}
                             title="Receber pagamento de fiado"
                             className="px-2.5 py-1.5 rounded-md border border-emerald-200 dark:border-emerald-800/70 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 text-xs font-medium hover:bg-emerald-100 dark:hover:bg-emerald-900/50 inline-flex items-center gap-1 whitespace-nowrap cursor-pointer"
@@ -269,7 +302,15 @@ export function CustomersView({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <form onSubmit={handleSave} className="space-y-3">
+            {formError && (
+              <div
+                role="alert"
+                className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-lg px-3 py-2 text-xs text-red-800 dark:text-red-300 font-medium"
+              >
+                {formError}
+              </div>
+            )}
+            <form onSubmit={handleSave} noValidate className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                   Nome *
@@ -279,7 +320,10 @@ export function CustomersView({
                   required
                   maxLength={FIELD_LIMITS.CUSTOMER_NAME}
                   value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, name: e.target.value }));
+                    setFormError(null);
+                  }}
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                 />
               </div>
@@ -291,7 +335,10 @@ export function CustomersView({
                   type="text"
                   maxLength={FIELD_LIMITS.PHONE}
                   value={form.phone}
-                  onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, phone: e.target.value }));
+                    setFormError(null);
+                  }}
                   placeholder="+258 874247787"
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
                 />
@@ -304,7 +351,10 @@ export function CustomersView({
                   type="text"
                   maxLength={FIELD_LIMITS.ADDRESS}
                   value={form.address}
-                  onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, address: e.target.value }));
+                    setFormError(null);
+                  }}
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                 />
               </div>
@@ -316,7 +366,10 @@ export function CustomersView({
                   type="text"
                   maxLength={FIELD_LIMITS.NEIGHBORHOOD}
                   value={form.neighborhood}
-                  onChange={(e) => setForm((f) => ({ ...f, neighborhood: e.target.value }))}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, neighborhood: e.target.value }));
+                    setFormError(null);
+                  }}
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                 />
               </div>
@@ -328,7 +381,10 @@ export function CustomersView({
                   type="text"
                   maxLength={FIELD_LIMITS.NOTES}
                   value={form.notes}
-                  onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, notes: e.target.value }));
+                    setFormError(null);
+                  }}
                   placeholder="Ex.: Condomínio bloco B, prefere P13"
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
                 />
@@ -378,10 +434,18 @@ export function CustomersView({
                 {formatCurrency(creditTarget.creditBalance, currency)}
               </span>
             </p>
-            <form onSubmit={handlePayCredit} className="space-y-4">
+            {creditError && (
+              <div
+                role="alert"
+                className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-lg px-3 py-2 text-xs text-red-800 dark:text-red-300 font-medium"
+              >
+                {creditError}
+              </div>
+            )}
+            <form onSubmit={handlePayCredit} noValidate className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Valor Recebido
+                  Valor Recebido *
                 </label>
                 <input
                   type="number"
@@ -389,8 +453,12 @@ export function CustomersView({
                   max={creditTarget.creditBalance}
                   step="0.50"
                   required
-                  value={creditPayAmount}
-                  onChange={(e) => setCreditPayAmount(Number(e.target.value) || 0)}
+                  value={creditPayAmountInput}
+                  onKeyDown={(e) => preventNegativeNumberKeys(e, true)}
+                  onChange={(e) => {
+                    setCreditPayAmountInput(sanitizeNumericText(e.target.value, true));
+                    setCreditError(null);
+                  }}
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                 />
               </div>

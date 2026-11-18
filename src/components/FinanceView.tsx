@@ -1,6 +1,11 @@
-import { Download, Plus, Trash2, X } from 'lucide-react';
+import { Calendar, Download, Package, Plus, Receipt, Trash2, TrendingUp, Wallet, X } from 'lucide-react';
 import { useMemo, useState, type FormEvent } from 'react';
 import { formatCurrency, formatDateTime, getRecordMillis, getRecordTimestamp } from '../lib/formatters';
+import {
+  preventNegativeNumberKeys,
+  sanitizeNumericText,
+  validateExpenseForm,
+} from '../lib/validation';
 import { createExpense, removeExpense } from '../services/depotService';
 import {
   type CurrencyCode,
@@ -24,40 +29,60 @@ interface FinanceViewProps {
   permissions: MemberPermissions;
 }
 
-type PeriodFilter = 'today' | '7d' | '30d' | 'all';
+type PeriodFilter = 'today' | '7d' | '30d' | 'all' | 'custom';
+
+function toInputDate(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 export function FinanceView({ uid, currency, sales, expenses, permissions }: FinanceViewProps) {
   const [period, setPeriod] = useState<PeriodFilter>('30d');
+  const [customStart, setCustomStart] = useState<string>(() => {
+    const now = new Date();
+    return toInputDate(new Date(now.getFullYear(), now.getMonth(), 1));
+  });
+  const [customEnd, setCustomEnd] = useState<string>(() => toInputDate(new Date()));
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [category, setCategory] = useState<ExpenseCategory>('fuel');
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
   const [saving, setSaving] = useState(false);
+  const [expenseError, setExpenseError] = useState<string | null>(null);
 
-  const periodThreshold = useMemo(() => {
+  const dateBounds = useMemo(() => {
     const now = new Date();
     if (period === 'today') {
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      return {
+        start: new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime(),
+        end: Infinity,
+      };
     }
-    if (period === '7d') return Date.now() - 7 * 86400000;
-    if (period === '30d') return Date.now() - 30 * 86400000;
-    return 0;
-  }, [period]);
+    if (period === '7d') return { start: Date.now() - 7 * 86400000, end: Infinity };
+    if (period === '30d') return { start: Date.now() - 30 * 86400000, end: Infinity };
+    if (period === 'all') return { start: 0, end: Infinity };
+
+    const start = customStart ? new Date(`${customStart}T00:00:00`).getTime() : 0;
+    const end = customEnd ? new Date(`${customEnd}T23:59:59.999`).getTime() : Infinity;
+    return { start, end };
+  }, [period, customStart, customEnd]);
 
   const filteredSales = useMemo(() => {
     return sales.filter((s) => {
       if (s.deliveryStatus === 'cancelled') return false;
       const ms = getRecordMillis(s);
-      return ms >= periodThreshold;
+      return ms >= dateBounds.start && ms <= dateBounds.end;
     });
-  }, [sales, periodThreshold]);
+  }, [sales, dateBounds]);
 
   const filteredExpenses = useMemo(() => {
     return expenses.filter((e) => {
       const ms = getRecordMillis(e);
-      return ms >= periodThreshold;
+      return ms >= dateBounds.start && ms <= dateBounds.end;
     });
-  }, [expenses, periodThreshold]);
+  }, [expenses, dateBounds]);
 
   const summary = useMemo(() => {
     const revenue = filteredSales.reduce((acc, s) => acc + s.totalAmount, 0);
@@ -92,14 +117,27 @@ export function FinanceView({ uid, currency, sales, expenses, permissions }: Fin
 
   const handleAddExpense = async (e: FormEvent) => {
     e.preventDefault();
-    const num = Number(amount);
-    if (!description.trim() || !Number.isFinite(num) || num <= 0) return;
+    setExpenseError(null);
+
+    const validation = validateExpenseForm({ description, amount });
+    if (!validation.ok) {
+      setExpenseError(validation.error);
+      return;
+    }
+
     setSaving(true);
     try {
-      await createExpense(uid, { category, description, amount: num });
+      await createExpense(uid, {
+        category,
+        description: validation.data.description,
+        amount: validation.data.amount,
+      });
       setDescription('');
       setAmount('');
+      setExpenseError(null);
       setShowExpenseModal(false);
+    } catch (err) {
+      setExpenseError(err instanceof Error ? err.message : 'Erro ao salvar despesa.');
     } finally {
       setSaving(false);
     }
@@ -124,7 +162,9 @@ export function FinanceView({ uid, currency, sales, expenses, permissions }: Fin
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `lucygas-vendas-${period}.csv`;
+    const suffix =
+      period === 'custom' ? `${customStart || 'inicio'}-a-${customEnd || 'hoje'}` : period;
+    a.download = `lucygas-vendas-${suffix}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -134,104 +174,182 @@ export function FinanceView({ uid, currency, sales, expenses, permissions }: Fin
     { id: '7d', label: '7 Dias' },
     { id: '30d', label: '30 Dias' },
     { id: 'all', label: 'Tudo' },
+    { id: 'custom', label: 'Personalizar' },
   ];
 
   return (
     <div className="space-y-8">
       {/* Period & Actions */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
-          {periods.map((p) => (
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
+            {periods.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setPeriod(p.id)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+                  period === p.id
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
+                }`}
+              >
+                {p.id === 'custom' && <Calendar className="w-3.5 h-3.5" />}
+                <span>{p.label}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2.5">
             <button
-              key={p.id}
               type="button"
-              onClick={() => setPeriod(p.id)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                period === p.id
-                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100'
-              }`}
+              onClick={handleExportCsv}
+              disabled={filteredSales.length === 0}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap cursor-pointer"
             >
-              {p.label}
+              <Download className="w-3.5 h-3.5" />
+              <span>Exportar CSV</span>
             </button>
-          ))}
+            {permissions.manageExpenses && (
+              <button
+                type="button"
+                onClick={() => {
+                  setExpenseError(null);
+                  setShowExpenseModal(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-orange-600 text-white text-xs font-semibold hover:bg-slate-800 dark:hover:bg-orange-700 whitespace-nowrap cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Registrar Despesa</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={handleExportCsv}
-            disabled={filteredSales.length === 0}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 whitespace-nowrap cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Exportar CSV</span>
-          </button>
-          {permissions.manageExpenses && (
-            <button
-              type="button"
-              onClick={() => setShowExpenseModal(true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-orange-600 text-white text-xs font-semibold hover:bg-slate-800 dark:hover:bg-orange-700 whitespace-nowrap cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Registrar Despesa</span>
-            </button>
-          )}
-        </div>
+        {period === 'custom' && (
+          <div className="flex flex-wrap items-center gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-slate-600 dark:text-slate-400">De:</label>
+              <input
+                type="date"
+                value={customStart}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setCustomStart(next);
+                  if (next && customEnd && next > customEnd) {
+                    setCustomEnd(next);
+                  }
+                }}
+                className="h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-mono text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-slate-600 dark:text-slate-400">Até:</label>
+              <input
+                type="date"
+                value={customEnd}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setCustomEnd(next);
+                  if (next && customStart && next < customStart) {
+                    setCustomStart(next);
+                  }
+                }}
+                className="h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-mono text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* KPI Strip */}
       <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Receita Bruta</p>
-          <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
-            {formatCurrency(summary.revenue, currency)}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-mono tabular-nums">
-            {filteredSales.length} vendas no período
-          </p>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Receita Bruta</p>
+            <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
+              {formatCurrency(summary.revenue, currency)}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-mono tabular-nums">
+              {filteredSales.length} vendas no período
+            </p>
+          </div>
+          <div
+            aria-hidden="true"
+            className="w-11 h-11 rounded-full bg-sky-100 dark:bg-sky-500/15 text-sky-700 dark:text-sky-400 flex items-center justify-center shrink-0"
+          >
+            <TrendingUp className="w-5 h-5" />
+          </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            Custo das Mercadorias (CMV)
-          </p>
-          <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
-            {formatCurrency(summary.cogs, currency)}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5">
-            Baseado no custo unitário dos botijões
-          </p>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              Custo das Mercadorias (CMV)
+            </p>
+            <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
+              {formatCurrency(summary.cogs, currency)}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5">
+              Baseado no custo unitário dos botijões
+            </p>
+          </div>
+          <div
+            aria-hidden="true"
+            className="w-11 h-11 rounded-full bg-orange-100 dark:bg-orange-500/15 text-orange-700 dark:text-orange-400 flex items-center justify-center shrink-0"
+          >
+            <Package className="w-5 h-5" />
+          </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            Despesas Operacionais
-          </p>
-          <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
-            {formatCurrency(summary.totalExpenses, currency)}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-mono tabular-nums">
-            {filteredExpenses.length} lançamentos
-          </p>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              Despesas Operacionais
+            </p>
+            <p className="font-mono tabular-nums text-2xl font-semibold text-slate-900 dark:text-slate-100 mt-1.5">
+              {formatCurrency(summary.totalExpenses, currency)}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-mono tabular-nums">
+              {filteredExpenses.length} lançamentos
+            </p>
+          </div>
+          <div
+            aria-hidden="true"
+            className="w-11 h-11 rounded-full bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-400 flex items-center justify-center shrink-0"
+          >
+            <Receipt className="w-5 h-5" />
+          </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            Resultado Líquido Estimado
-          </p>
-          <p
-            className={`font-mono tabular-nums text-2xl font-semibold mt-1.5 ${
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              Resultado Líquido Estimado
+            </p>
+            <p
+              className={`font-mono tabular-nums text-2xl font-semibold mt-1.5 ${
+                summary.netProfit >= 0
+                  ? 'text-emerald-700 dark:text-emerald-400'
+                  : 'text-red-700 dark:text-red-400'
+              }`}
+            >
+              {formatCurrency(summary.netProfit, currency)}
+            </p>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-mono tabular-nums">
+              A receber: {formatCurrency(summary.pendingReceivables, currency)}
+            </p>
+          </div>
+          <div
+            aria-hidden="true"
+            className={`w-11 h-11 rounded-full flex items-center justify-center shrink-0 ${
               summary.netProfit >= 0
-                ? 'text-emerald-700 dark:text-emerald-400'
-                : 'text-red-700 dark:text-red-400'
+                ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+                : 'bg-red-100 dark:bg-red-500/15 text-red-700 dark:text-red-400'
             }`}
           >
-            {formatCurrency(summary.netProfit, currency)}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-mono tabular-nums">
-            A receber: {formatCurrency(summary.pendingReceivables, currency)}
-          </p>
+            <Wallet className="w-5 h-5" />
+          </div>
         </div>
       </section>
 
@@ -240,7 +358,10 @@ export function FinanceView({ uid, currency, sales, expenses, permissions }: Fin
         currency={currency}
         sales={sales}
         expenses={expenses}
-        onAddExpense={() => setShowExpenseModal(true)}
+        onAddExpense={() => {
+          setExpenseError(null);
+          setShowExpenseModal(true);
+        }}
       />
 
       {/* Split: Payment Methods + Expenses */}
@@ -375,7 +496,15 @@ export function FinanceView({ uid, currency, sales, expenses, permissions }: Fin
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <form onSubmit={handleAddExpense} className="space-y-3">
+            {expenseError && (
+              <div
+                role="alert"
+                className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-lg px-3 py-2 text-xs text-red-800 dark:text-red-300 font-medium"
+              >
+                {expenseError}
+              </div>
+            )}
+            <form onSubmit={handleAddExpense} noValidate className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
                   Categoria
@@ -401,7 +530,10 @@ export function FinanceView({ uid, currency, sales, expenses, permissions }: Fin
                   required
                   maxLength={FIELD_LIMITS.EXPENSE_DESC}
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={(e) => {
+                    setDescription(e.target.value);
+                    setExpenseError(null);
+                  }}
                   placeholder="Ex.: Abastecimento moto de entrega"
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-orange-600"
                 />
@@ -414,9 +546,14 @@ export function FinanceView({ uid, currency, sales, expenses, permissions }: Fin
                   type="number"
                   required
                   min="0.01"
+                  max={100000000}
                   step="0.50"
                   value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onKeyDown={(e) => preventNegativeNumberKeys(e, true)}
+                  onChange={(e) => {
+                    setAmount(sanitizeNumericText(e.target.value, true));
+                    setExpenseError(null);
+                  }}
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                 />
               </div>

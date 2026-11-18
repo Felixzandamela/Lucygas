@@ -665,15 +665,34 @@ export async function createSaleTransaction(input: CreateSaleInput): Promise<Sal
     occurredAt,
   } = input;
 
-  const qty = Math.max(1, Math.min(500, Math.floor(quantity)));
+  if (!Number.isFinite(quantity) || !Number.isInteger(quantity) || quantity < 1 || quantity > 500) {
+    throw new Error('A quantidade da venda deve ser um número inteiro entre 1 e 500.');
+  }
+  if (!Number.isFinite(discount) || discount < 0 || discount > 1000000) {
+    throw new Error('O desconto não pode ser negativo.');
+  }
+  if (!Number.isFinite(deliveryFee) || deliveryFee < 0 || deliveryFee > 100000) {
+    throw new Error('A taxa de entrega não pode ser negativa.');
+  }
+  if (!customer && !walkInName.trim()) {
+    throw new Error('Informe o nome do cliente para concluir a venda.');
+  }
+  if (fulfillmentType === 'delivery' && !deliveryAddress.trim()) {
+    throw new Error('Informe o endereço de entrega para concluir o pedido.');
+  }
+
+  const qty = quantity;
   if (cylinder.fullCount < qty) {
     throw new Error(`Estoque insuficiente de ${cylinder.code}: apenas ${cylinder.fullCount} cheios disponíveis.`);
   }
 
   const unitPrice =
     saleMode === 'exchange' ? cylinder.salePrice : cylinder.salePrice + cylinder.shellPrice;
-  const safeDiscount = clampNonNegative(discount, unitPrice * qty + deliveryFee);
   const safeDeliveryFee = fulfillmentType === 'delivery' ? clampNonNegative(deliveryFee, 100000) : 0;
+  if (discount > unitPrice * qty + safeDeliveryFee) {
+    throw new Error('O desconto não pode ser maior que o valor total da venda.');
+  }
+  const safeDiscount = clampNonNegative(discount, unitPrice * qty + safeDeliveryFee);
   const totalAmount = clampNonNegative(unitPrice * qty + safeDeliveryFee - safeDiscount);
 
   const paymentStatus: PaymentStatus = paymentMethod === 'credit' ? 'pending' : 'paid';
@@ -884,8 +903,14 @@ export async function adjustCylinderStock(
   note: string,
   occurredAt?: Date
 ): Promise<void> {
-  const nextFull = Math.max(0, cylinder.fullCount + fullDelta);
-  const nextEmpty = Math.max(0, cylinder.emptyCount + emptyDelta);
+  if (!Number.isFinite(fullDelta) || !Number.isFinite(emptyDelta)) {
+    throw new Error('Informe quantidades válidas para a movimentação de estoque.');
+  }
+  const nextFull = cylinder.fullCount + fullDelta;
+  const nextEmpty = cylinder.emptyCount + emptyDelta;
+  if (nextFull < 0 || nextEmpty < 0) {
+    throw new Error('O saldo de botijões cheios ou vazios não pode ficar negativo.');
+  }
   const occurredTs = toSafeOccurredAtTimestamp(occurredAt);
 
   const batch = writeBatch(db);
@@ -931,12 +956,34 @@ export async function updateCylinderCatalog(
     imageUrl?: string;
   }
 ): Promise<void> {
+  const cleanCode = sanitizeText(payload.code, FIELD_LIMITS.CYLINDER_CODE);
+  const cleanName = sanitizeText(payload.name, FIELD_LIMITS.CYLINDER_NAME);
+  if (!cleanCode || !cleanName) {
+    throw new Error('Código e descrição do produto são obrigatórios.');
+  }
+  if (!Number.isFinite(payload.weightKg) || payload.weightKg <= 0 || payload.weightKg > 1000) {
+    throw new Error('O peso do botijão deve ser maior que zero e até 1.000 kg.');
+  }
+  if (!Number.isFinite(payload.salePrice) || payload.salePrice <= 0 || payload.salePrice > 1000000) {
+    throw new Error('O preço de recarga deve ser maior que zero.');
+  }
+  if (
+    !Number.isFinite(payload.shellPrice) ||
+    payload.shellPrice < 0 ||
+    !Number.isFinite(payload.costPrice) ||
+    payload.costPrice < 0 ||
+    !Number.isFinite(payload.minStock) ||
+    payload.minStock < 0
+  ) {
+    throw new Error('Preços, custos e estoque mínimo não podem ser negativos.');
+  }
+
   const cylRef = doc(db, 'depots', uid, 'cylinders', cylinderId);
   await executeFirestoreWrite(
     updateDoc(cylRef, {
-      code: sanitizeText(payload.code, FIELD_LIMITS.CYLINDER_CODE),
-      name: sanitizeText(payload.name, FIELD_LIMITS.CYLINDER_NAME),
-      weightKg: Math.max(1, clampNonNegative(payload.weightKg, 1000)),
+      code: cleanCode,
+      name: cleanName,
+      weightKg: clampNonNegative(payload.weightKg, 1000),
       salePrice: clampNonNegative(payload.salePrice, 1000000),
       shellPrice: clampNonNegative(payload.shellPrice, 1000000),
       costPrice: clampNonNegative(payload.costPrice, 1000000),
@@ -964,8 +1011,37 @@ export async function createCylinder(
     imageUrl?: string;
   }
 ): Promise<string> {
-  const cylRef = doc(collection(db, 'depots', uid, 'cylinders'));
   const cleanCode = sanitizeText(payload.code, FIELD_LIMITS.CYLINDER_CODE);
+  const cleanName = sanitizeText(payload.name, FIELD_LIMITS.CYLINDER_NAME);
+  if (!cleanCode || !cleanName) {
+    throw new Error('Código e descrição do produto são obrigatórios.');
+  }
+  if (!Number.isFinite(payload.weightKg) || payload.weightKg <= 0 || payload.weightKg > 1000) {
+    throw new Error('O peso do botijão deve ser maior que zero e até 1.000 kg.');
+  }
+  if (
+    !Number.isFinite(payload.fullCount) ||
+    payload.fullCount < 0 ||
+    !Number.isFinite(payload.emptyCount) ||
+    payload.emptyCount < 0
+  ) {
+    throw new Error('As quantidades iniciais não podem ser negativas.');
+  }
+  if (!Number.isFinite(payload.salePrice) || payload.salePrice <= 0 || payload.salePrice > 1000000) {
+    throw new Error('O preço de recarga deve ser maior que zero.');
+  }
+  if (
+    !Number.isFinite(payload.shellPrice) ||
+    payload.shellPrice < 0 ||
+    !Number.isFinite(payload.costPrice) ||
+    payload.costPrice < 0 ||
+    !Number.isFinite(payload.minStock) ||
+    payload.minStock < 0
+  ) {
+    throw new Error('Preços, custos e estoque mínimo não podem ser negativos.');
+  }
+
+  const cylRef = doc(collection(db, 'depots', uid, 'cylinders'));
   const fullCount = Math.floor(clampNonNegative(payload.fullCount, 100000));
   const emptyCount = Math.floor(clampNonNegative(payload.emptyCount, 100000));
 
@@ -973,8 +1049,8 @@ export async function createCylinder(
     setDoc(cylRef, {
       ...buildAccessFields(uid),
       code: cleanCode,
-      name: sanitizeText(payload.name, FIELD_LIMITS.CYLINDER_NAME),
-      weightKg: Math.max(0.5, clampNonNegative(payload.weightKg, 1000)),
+      name: cleanName,
+      weightKg: clampNonNegative(payload.weightKg, 1000),
       fullCount,
       emptyCount,
       salePrice: clampNonNegative(payload.salePrice, 1000000),
@@ -1014,6 +1090,11 @@ export async function updateCylindersMinStock(
   updates: { cylinderId: string; minStock: number }[]
 ): Promise<void> {
   if (updates.length === 0) return;
+  for (const item of updates) {
+    if (!Number.isFinite(item.minStock) || item.minStock < 0 || item.minStock > 10000) {
+      throw new Error('O estoque mínimo deve ser um número inteiro maior ou igual a zero.');
+    }
+  }
   const batch = writeBatch(db);
   for (const item of updates) {
     const cylRef = doc(db, 'depots', uid, 'cylinders', item.cylinderId);
@@ -1034,11 +1115,15 @@ export async function createCustomer(
   uid: string,
   payload: { name: string; phone: string; address: string; neighborhood: string; notes: string }
 ): Promise<string> {
+  const cleanName = sanitizeText(payload.name, FIELD_LIMITS.CUSTOMER_NAME);
+  if (!cleanName) {
+    throw new Error('O nome do cliente é obrigatório.');
+  }
   const ref = doc(collection(db, 'depots', uid, 'customers'));
   await executeFirestoreWrite(
     setDoc(ref, {
       ...buildAccessFields(uid),
-      name: sanitizeText(payload.name, FIELD_LIMITS.CUSTOMER_NAME),
+      name: cleanName,
       phone: sanitizeText(payload.phone, FIELD_LIMITS.PHONE),
       address: sanitizeText(payload.address, FIELD_LIMITS.ADDRESS),
       neighborhood: sanitizeText(payload.neighborhood, FIELD_LIMITS.NEIGHBORHOOD),
@@ -1060,10 +1145,14 @@ export async function updateCustomerProfile(
   customerId: string,
   payload: { name: string; phone: string; address: string; neighborhood: string; notes: string }
 ): Promise<void> {
+  const cleanName = sanitizeText(payload.name, FIELD_LIMITS.CUSTOMER_NAME);
+  if (!cleanName) {
+    throw new Error('O nome do cliente é obrigatório.');
+  }
   const ref = doc(db, 'depots', uid, 'customers', customerId);
   await executeFirestoreWrite(
     updateDoc(ref, {
-      name: sanitizeText(payload.name, FIELD_LIMITS.CUSTOMER_NAME),
+      name: cleanName,
       phone: sanitizeText(payload.phone, FIELD_LIMITS.PHONE),
       address: sanitizeText(payload.address, FIELD_LIMITS.ADDRESS),
       neighborhood: sanitizeText(payload.neighborhood, FIELD_LIMITS.NEIGHBORHOOD),
@@ -1076,6 +1165,9 @@ export async function updateCustomerProfile(
 }
 
 export async function settleCustomerCredit(uid: string, customer: Customer, paidAmount: number): Promise<void> {
+  if (!Number.isFinite(paidAmount) || paidAmount <= 0 || paidAmount > customer.creditBalance + 0.0001) {
+    throw new Error('Informe um valor recebido válido entre 0,01 e o saldo devedor atual.');
+  }
   const ref = doc(db, 'depots', uid, 'customers', customer.id);
   const nextBalance = Math.max(0, clampNonNegative(customer.creditBalance - paidAmount));
   await executeFirestoreWrite(
@@ -1101,6 +1193,13 @@ export async function createExpense(
   uid: string,
   payload: { category: ExpenseCategory; description: string; amount: number; occurredAt?: Date }
 ): Promise<void> {
+  const cleanDesc = sanitizeText(payload.description, FIELD_LIMITS.EXPENSE_DESC);
+  if (!cleanDesc) {
+    throw new Error('A descrição da despesa é obrigatória.');
+  }
+  if (!Number.isFinite(payload.amount) || payload.amount <= 0 || payload.amount > 100000000) {
+    throw new Error('O valor da despesa deve ser maior que zero.');
+  }
   const ref = doc(collection(db, 'depots', uid, 'expenses'));
   const amount = Math.max(0.01, clampNonNegative(payload.amount, 100000000));
   const occurredTs = toSafeOccurredAtTimestamp(payload.occurredAt);
@@ -1108,7 +1207,7 @@ export async function createExpense(
     setDoc(ref, {
       ...buildAccessFields(uid),
       category: payload.category,
-      description: sanitizeText(payload.description, FIELD_LIMITS.EXPENSE_DESC),
+      description: cleanDesc,
       amount,
       ...(occurredTs ? { occurredAt: occurredTs } : {}),
       createdAt: serverTimestamp(),
@@ -1140,6 +1239,13 @@ export async function updateDepotSettings(
   uid: string,
   payload: { name: string; currency: CurrencyCode; deliveryFee: number; drivers: string[] }
 ): Promise<void> {
+  const cleanName = sanitizeText(payload.name, FIELD_LIMITS.DEPOT_NAME);
+  if (!cleanName) {
+    throw new Error('O nome da distribuidora é obrigatório.');
+  }
+  if (!Number.isFinite(payload.deliveryFee) || payload.deliveryFee < 0 || payload.deliveryFee > 10000) {
+    throw new Error('A taxa padrão de entrega não pode ser negativa.');
+  }
   const ref = doc(db, 'depots', uid);
   const cleanDrivers = payload.drivers
     .map((d) => sanitizeText(d, FIELD_LIMITS.DRIVER_NAME))
@@ -1148,7 +1254,7 @@ export async function updateDepotSettings(
 
   await executeFirestoreWrite(
     updateDoc(ref, {
-      name: sanitizeText(payload.name, FIELD_LIMITS.DEPOT_NAME),
+      name: cleanName,
       currency: payload.currency,
       deliveryFee: clampNonNegative(payload.deliveryFee, 10000),
       drivers: cleanDrivers,

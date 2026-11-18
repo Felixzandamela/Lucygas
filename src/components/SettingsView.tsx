@@ -20,6 +20,12 @@ import { type ThemeMode, useTheme } from '../contexts/ThemeContext';
 import type { PushNotificationPrefs, PushPermissionState } from '../hooks/usePushNotifications';
 import { getRecordMillis } from '../lib/formatters';
 import {
+  parseStrictNumber,
+  preventNegativeNumberKeys,
+  sanitizeNumericText,
+  validateDepotSettingsForm,
+} from '../lib/validation';
+import {
   discardRecordsBatch,
   updateCylindersMinStock,
   updateDepotSettings,
@@ -116,15 +122,18 @@ export function SettingsView({
   });
   const [name, setName] = useState('');
   const [currency, setCurrency] = useState<CurrencyCode>('BRL');
-  const [deliveryFee, setDeliveryFee] = useState<number>(8);
+  const [deliveryFeeInput, setDeliveryFeeInput] = useState<string>('8');
   const [drivers, setDrivers] = useState<string[]>([]);
   const [newDriver, setNewDriver] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [driverError, setDriverError] = useState<string | null>(null);
 
-  const [minStocks, setMinStocks] = useState<Record<string, number>>({});
+  const [minStocks, setMinStocks] = useState<Record<string, string>>({});
   const [savingMinStock, setSavingMinStock] = useState(false);
   const [savedMinStockNotice, setSavedMinStockNotice] = useState(false);
+  const [minStockError, setMinStockError] = useState<string | null>(null);
 
   const [showHistoricalModal, setShowHistoricalModal] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
@@ -188,40 +197,72 @@ export function SettingsView({
     if (depot) {
       setName(depot.name);
       setCurrency(depot.currency);
-      setDeliveryFee(depot.deliveryFee);
+      setDeliveryFeeInput(String(depot.deliveryFee));
       setDrivers(depot.drivers || []);
     }
   }, [depot]);
 
   useEffect(() => {
-    const next: Record<string, number> = {};
+    const next: Record<string, string> = {};
     for (const cyl of cylinders) {
-      next[cyl.id] = cyl.minStock;
+      next[cyl.id] = String(cyl.minStock);
     }
     setMinStocks(next);
   }, [cylinders]);
 
   const handleAddDriver = () => {
-    const clean = newDriver.trim().slice(0, FIELD_LIMITS.DRIVER_NAME);
-    if (!clean || drivers.length >= FIELD_LIMITS.MAX_DRIVERS) return;
-    if (!drivers.includes(clean)) {
-      setDrivers((prev) => [...prev, clean]);
+    setDriverError(null);
+    const clean = newDriver.trim();
+    if (!clean) {
+      setDriverError('Informe o nome do entregador antes de adicionar.');
+      return;
     }
+    if (clean.length > FIELD_LIMITS.DRIVER_NAME) {
+      setDriverError(`O nome do entregador deve ter no máximo ${FIELD_LIMITS.DRIVER_NAME} caracteres.`);
+      return;
+    }
+    if (drivers.length >= FIELD_LIMITS.MAX_DRIVERS) {
+      setDriverError(`Limite máximo de ${FIELD_LIMITS.MAX_DRIVERS} entregadores atingido.`);
+      return;
+    }
+    if (drivers.some((d) => d.trim().toLowerCase() === clean.toLowerCase())) {
+      setDriverError(`O entregador "${clean}" já está na lista.`);
+      return;
+    }
+    setDrivers((prev) => [...prev, clean]);
     setNewDriver('');
   };
 
   const handleRemoveDriver = (drv: string) => {
     setDrivers((prev) => prev.filter((item) => item !== drv));
+    setDriverError(null);
   };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
-    setSaving(true);
+    setSettingsError(null);
     setSavedNotice(false);
+
+    const validation = validateDepotSettingsForm({
+      name,
+      deliveryFee: deliveryFeeInput,
+    });
+    if (!validation.ok) {
+      setSettingsError(validation.error);
+      return;
+    }
+
+    setSaving(true);
     try {
-      await updateDepotSettings(uid, { name, currency, deliveryFee, drivers });
+      await updateDepotSettings(uid, {
+        name: validation.data.name,
+        currency,
+        deliveryFee: validation.data.deliveryFee,
+        drivers,
+      });
       setSavedNotice(true);
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : 'Erro ao salvar configurações.');
     } finally {
       setSaving(false);
     }
@@ -229,20 +270,32 @@ export function SettingsView({
 
   const handleMinStockSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    const updates = cylinders
-      .map((cyl) => ({
-        cylinderId: cyl.id,
-        minStock: Math.max(0, Math.floor(minStocks[cyl.id] ?? cyl.minStock)),
-      }))
-      .filter((item, idx) => item.minStock !== cylinders[idx].minStock);
+    setMinStockError(null);
+    setSavedMinStockNotice(false);
+
+    const parsedUpdates: { cylinderId: string; minStock: number }[] = [];
+    for (const cyl of cylinders) {
+      const raw = minStocks[cyl.id] ?? String(cyl.minStock);
+      const parsed = parseStrictNumber(raw);
+      if (parsed === null || parsed < 0 || !Number.isInteger(parsed) || parsed > 10000) {
+        setMinStockError(
+          `Informe um estoque mínimo inteiro entre 0 e 10.000 para ${cyl.code}.`
+        );
+        return;
+      }
+      if (parsed !== cyl.minStock) {
+        parsedUpdates.push({ cylinderId: cyl.id, minStock: parsed });
+      }
+    }
 
     setSavingMinStock(true);
-    setSavedMinStockNotice(false);
     try {
-      if (updates.length > 0) {
-        await updateCylindersMinStock(uid, updates);
+      if (parsedUpdates.length > 0) {
+        await updateCylindersMinStock(uid, parsedUpdates);
       }
       setSavedMinStockNotice(true);
+    } catch (err) {
+      setMinStockError(err instanceof Error ? err.message : 'Erro ao salvar estoque mínimo.');
     } finally {
       setSavingMinStock(false);
     }
@@ -463,6 +516,7 @@ export function SettingsView({
       {effectiveTab === 'general' && canEditSettings && (
       <form
         onSubmit={handleSubmit}
+        noValidate
         className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-6"
       >
         <div className="pb-4 border-b border-slate-100 dark:border-slate-800">
@@ -474,17 +528,29 @@ export function SettingsView({
           </p>
         </div>
 
+        {settingsError && (
+          <div
+            role="alert"
+            className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-lg px-3.5 py-2.5 text-xs text-red-800 dark:text-red-300 font-medium"
+          >
+            {settingsError}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="sm:col-span-2">
             <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Nome da Distribuidora
+              Nome da Distribuidora *
             </label>
             <input
               type="text"
               required
               maxLength={FIELD_LIMITS.DEPOT_NAME}
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setSettingsError(null);
+              }}
               className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
             />
           </div>
@@ -506,14 +572,19 @@ export function SettingsView({
 
           <div>
             <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Taxa Padrão de Entrega
+              Taxa Padrão de Entrega *
             </label>
             <input
               type="number"
               min={0}
+              max={10000}
               step="0.50"
-              value={deliveryFee}
-              onChange={(e) => setDeliveryFee(Math.max(0, Number(e.target.value) || 0))}
+              value={deliveryFeeInput}
+              onKeyDown={(e) => preventNegativeNumberKeys(e, true)}
+              onChange={(e) => {
+                setDeliveryFeeInput(sanitizeNumericText(e.target.value, true));
+                setSettingsError(null);
+              }}
               className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
             />
           </div>
@@ -528,7 +599,10 @@ export function SettingsView({
               type="text"
               maxLength={FIELD_LIMITS.DRIVER_NAME}
               value={newDriver}
-              onChange={(e) => setNewDriver(e.target.value)}
+              onChange={(e) => {
+                setNewDriver(e.target.value);
+                setDriverError(null);
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
@@ -547,6 +621,11 @@ export function SettingsView({
               <span>Adicionar</span>
             </button>
           </div>
+          {driverError && (
+            <p role="alert" className="text-xs text-red-600 dark:text-red-400 font-medium">
+              {driverError}
+            </p>
+          )}
 
           {drivers.length > 0 && (
             <div className="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
@@ -593,6 +672,7 @@ export function SettingsView({
       {effectiveTab === 'stock_history' && canEditStockHistory && (
       <form
         onSubmit={handleMinStockSubmit}
+        noValidate
         className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5"
       >
         <div className="pb-4 border-b border-slate-100 dark:border-slate-800">
@@ -603,6 +683,15 @@ export function SettingsView({
             Defina a quantidade mínima de botijões cheios para acionar o alerta visual na tela de inventário
           </p>
         </div>
+
+        {minStockError && (
+          <div
+            role="alert"
+            className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-lg px-3.5 py-2.5 text-xs text-red-800 dark:text-red-300 font-medium"
+          >
+            {minStockError}
+          </div>
+        )}
 
         {cylinders.length === 0 ? (
           <p className="text-sm text-slate-500 dark:text-slate-400 py-4">
@@ -621,7 +710,8 @@ export function SettingsView({
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
                 {cylinders.map((cyl) => {
-                  const configuredMin = minStocks[cyl.id] ?? cyl.minStock;
+                  const rawVal = minStocks[cyl.id] ?? String(cyl.minStock);
+                  const configuredMin = parseStrictNumber(rawVal) ?? cyl.minStock;
                   const isBelow = cyl.fullCount < configuredMin;
                   return (
                     <tr key={cyl.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
@@ -639,11 +729,14 @@ export function SettingsView({
                           type="number"
                           min={0}
                           max={10000}
+                          step={1}
                           aria-label={`Estoque mínimo de ${cyl.code}`}
-                          value={configuredMin}
+                          value={rawVal}
+                          onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
                           onChange={(e) => {
-                            const val = Math.max(0, Math.min(10000, Number(e.target.value) || 0));
-                            setMinStocks((prev) => ({ ...prev, [cyl.id]: val }));
+                            const clean = sanitizeNumericText(e.target.value, false);
+                            setMinStocks((prev) => ({ ...prev, [cyl.id]: clean }));
+                            setMinStockError(null);
                           }}
                           className="w-24 h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-right font-mono tabular-nums text-sm text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
                         />

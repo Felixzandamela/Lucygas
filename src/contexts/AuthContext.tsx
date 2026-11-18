@@ -36,12 +36,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const switchDepot = useCallback(
     (depotId: string) => {
       if (!user) return;
+      const currentDepot = availableDepots.find((d) => d.id === activeDepotId);
+      if (currentDepot && currentDepot.ownerId !== user.uid) return;
       setActiveDepotId(depotId);
       if (typeof window !== 'undefined') {
         window.localStorage.setItem(`lucygas_active_depot_${user.uid}`, depotId);
       }
     },
-    [user]
+    [user, availableDepots, activeDepotId]
   );
 
   useEffect(() => {

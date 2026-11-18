@@ -13,6 +13,12 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { formatCurrency, getRecordDate, getRecordMillis } from '../lib/formatters';
 import {
+  getTodayIsoDate,
+  isValidPastOrTodayIsoDate,
+  preventNegativeNumberKeys,
+  sanitizeNumericText,
+} from '../lib/validation';
+import {
   applyHistoricalLedgerRebuild,
   deleteSingleHistoricalEvent,
   type HistoricalEventKind,
@@ -168,6 +174,7 @@ export function HistoricalLedgerModal({
 }: HistoricalLedgerModalProps) {
   const [initialDraft] = useState<HistoricalDraftPayload | null>(() => loadDraftFromStorage(uid));
   const defaultRange = useMemo(() => getDefaultDateRange(), []);
+  const todayStr = getTodayIsoDate();
 
   const [startDate, setStartDate] = useState<string>(
     () => initialDraft?.startDate ?? defaultRange.startDate
@@ -440,7 +447,7 @@ export function HistoricalLedgerModal({
   };
 
   const handleUpdateInitial = (code: string, field: 'fullCount' | 'emptyCount', val: number) => {
-    const safe = Math.max(0, Math.floor(val || 0));
+    const safe = Number.isFinite(val) ? Math.min(100000, Math.max(0, Math.floor(val))) : 0;
     setInitialSaved(false);
     setInitialStocks((prev) =>
       prev.map((item) => (item.code === code ? { ...item, [field]: safe } : item))
@@ -461,9 +468,67 @@ export function HistoricalLedgerModal({
     );
   };
 
+  const validateInitialStockList = (): string | null => {
+    if (!isValidPastOrTodayIsoDate(startDate)) {
+      return 'Informe uma Data Inicial válida que não esteja no futuro.';
+    }
+    for (const item of initialStocks) {
+      if (
+        !Number.isFinite(item.fullCount) ||
+        !Number.isInteger(item.fullCount) ||
+        item.fullCount < 0 ||
+        item.fullCount > 100000
+      ) {
+        return `${item.code}: cheios iniciais deve ser um número inteiro entre 0 e 100.000.`;
+      }
+      if (
+        !Number.isFinite(item.emptyCount) ||
+        !Number.isInteger(item.emptyCount) ||
+        item.emptyCount < 0 ||
+        item.emptyCount > 100000
+      ) {
+        return `${item.code}: vazios iniciais deve ser um número inteiro entre 0 e 100.000.`;
+      }
+    }
+    return null;
+  };
+
+  const validateEventRow = (ev: HistoricalLedgerEventInput, index: number): string | null => {
+    const rowLabel = `Linha ${index + 1}`;
+    if (!isValidPastOrTodayIsoDate(ev.dateStr)) {
+      return `${rowLabel}: informe uma data válida que não esteja no futuro.`;
+    }
+    if (!ev.cylinderCode.trim()) {
+      return `${rowLabel}: selecione o tipo de botijão.`;
+    }
+    if (
+      !Number.isFinite(ev.quantity) ||
+      !Number.isInteger(ev.quantity) ||
+      ev.quantity < 1 ||
+      ev.quantity > 500
+    ) {
+      return `${rowLabel}: a quantidade deve ser um número inteiro entre 1 e 500.`;
+    }
+    if (ev.kind === 'sale') {
+      if (!Number.isFinite(ev.discount) || ev.discount < 0 || ev.discount > 1000000) {
+        return `${rowLabel}: o desconto não pode ser negativo.`;
+      }
+      const cyl = cylinderByCode.get(ev.cylinderCode.trim().toUpperCase());
+      if (cyl && ev.discount > cyl.salePrice * ev.quantity) {
+        return `${rowLabel}: o desconto não pode ser maior que o valor bruto da venda (${formatCurrency(cyl.salePrice * ev.quantity, currency)}).`;
+      }
+    }
+    return null;
+  };
+
   const handleSaveInitial = async () => {
     setErrorMsg(null);
     setRowNotice(null);
+    const validationErr = validateInitialStockList();
+    if (validationErr) {
+      setErrorMsg(validationErr);
+      return;
+    }
     setSavingInitial(true);
     try {
       await saveInitialStockToFirestore({
@@ -484,6 +549,11 @@ export function HistoricalLedgerModal({
   const handleSaveRow = async (ev: HistoricalLedgerEventInput, index: number) => {
     setErrorMsg(null);
     setRowNotice(null);
+    const rowError = validateEventRow(ev, index);
+    if (rowError) {
+      setErrorMsg(rowError);
+      return;
+    }
     setSavingRowId(ev.id);
     try {
       const savedRecord = await saveSingleHistoricalEvent({
@@ -562,6 +632,28 @@ export function HistoricalLedgerModal({
   const handleApply = async () => {
     setErrorMsg(null);
     setRowNotice(null);
+
+    if (!isValidPastOrTodayIsoDate(startDate) || !isValidPastOrTodayIsoDate(endDate)) {
+      setErrorMsg('Informe datas inicial e final válidas que não estejam no futuro.');
+      return;
+    }
+    if (startDate > endDate) {
+      setErrorMsg('A data inicial não pode ser posterior à data final.');
+      return;
+    }
+    const initErr = validateInitialStockList();
+    if (initErr) {
+      setErrorMsg(initErr);
+      return;
+    }
+    for (let i = 0; i < events.length; i++) {
+      const rowErr = validateEventRow(events[i], i);
+      if (rowErr) {
+        setErrorMsg(rowErr);
+        return;
+      }
+    }
+
     setApplying(true);
     try {
       const salesToDelete =
@@ -692,6 +784,7 @@ export function HistoricalLedgerModal({
                 </label>
                 <input
                   type="date"
+                  max={todayStr}
                   value={startDate}
                   onChange={(e) => handleStartDateChange(e.target.value)}
                   className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
@@ -703,6 +796,7 @@ export function HistoricalLedgerModal({
                 </label>
                 <input
                   type="date"
+                  max={todayStr}
                   value={endDate}
                   onChange={(e) => handleEndDateChange(e.target.value)}
                   className="w-full h-9 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-orange-600"
@@ -857,10 +951,19 @@ export function HistoricalLedgerModal({
                       <input
                         type="number"
                         min={0}
+                        max={100000}
+                        step={1}
                         value={item.fullCount}
-                        onChange={(e) =>
-                          handleUpdateInitial(item.code, 'fullCount', Number(e.target.value))
-                        }
+                        onFocus={(e) => e.currentTarget.select()}
+                        onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                        onChange={(e) => {
+                          const clean = sanitizeNumericText(e.target.value, false);
+                          handleUpdateInitial(
+                            item.code,
+                            'fullCount',
+                            clean === '' ? 0 : Number(clean)
+                          );
+                        }}
                         className="w-full h-8 px-2 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs text-slate-900 dark:text-slate-100"
                       />
                     </div>
@@ -871,10 +974,19 @@ export function HistoricalLedgerModal({
                       <input
                         type="number"
                         min={0}
+                        max={100000}
+                        step={1}
                         value={item.emptyCount}
-                        onChange={(e) =>
-                          handleUpdateInitial(item.code, 'emptyCount', Number(e.target.value))
-                        }
+                        onFocus={(e) => e.currentTarget.select()}
+                        onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                        onChange={(e) => {
+                          const clean = sanitizeNumericText(e.target.value, false);
+                          handleUpdateInitial(
+                            item.code,
+                            'emptyCount',
+                            clean === '' ? 0 : Number(clean)
+                          );
+                        }}
                         className="w-full h-8 px-2 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs text-slate-900 dark:text-slate-100"
                       />
                     </div>
@@ -1026,6 +1138,7 @@ export function HistoricalLedgerModal({
                           <td className="py-1.5 px-2">
                             <input
                               type="date"
+                              max={todayStr}
                               value={ev.dateStr}
                               onChange={(e) => handleUpdateEvent(ev.id, { dateStr: e.target.value })}
                               className="h-7 px-1.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono text-[11px] text-slate-900 dark:text-slate-100"
@@ -1067,12 +1180,17 @@ export function HistoricalLedgerModal({
                             <input
                               type="number"
                               min={1}
+                              max={500}
+                              step={1}
                               value={ev.quantity}
-                              onChange={(e) =>
+                              onFocus={(e) => e.currentTarget.select()}
+                              onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
+                              onChange={(e) => {
+                                const clean = sanitizeNumericText(e.target.value, false);
                                 handleUpdateEvent(ev.id, {
-                                  quantity: Math.max(1, Math.floor(Number(e.target.value) || 1)),
-                                })
-                              }
+                                  quantity: Math.min(500, Math.max(1, Math.floor(Number(clean) || 1))),
+                                });
+                              }}
                               className="w-16 h-7 px-1.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-right font-mono text-[11px] text-slate-900 dark:text-slate-100"
                             />
                           </td>
@@ -1081,13 +1199,17 @@ export function HistoricalLedgerModal({
                               <input
                                 type="number"
                                 min={0}
+                                max={1000000}
                                 step="0.5"
                                 value={ev.discount}
-                                onChange={(e) =>
+                                onFocus={(e) => e.currentTarget.select()}
+                                onKeyDown={(e) => preventNegativeNumberKeys(e, true)}
+                                onChange={(e) => {
+                                  const clean = sanitizeNumericText(e.target.value, true);
                                   handleUpdateEvent(ev.id, {
-                                    discount: Math.max(0, Number(e.target.value) || 0),
-                                  })
-                                }
+                                    discount: clean === '' ? 0 : Math.min(1000000, Math.max(0, Number(clean))),
+                                  });
+                                }}
                                 className="w-20 h-7 px-1.5 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-right font-mono text-[11px] text-slate-900 dark:text-slate-100"
                               />
                             ) : (

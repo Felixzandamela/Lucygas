@@ -183,8 +183,17 @@ export function UserManagementTab({
     setNotice(null);
 
     const candidate = normalizeEmail(inviteEmail);
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate)) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate) || candidate.length > FIELD_LIMITS.EMAIL) {
       setErrorMsg('Informe um endereço de e-mail Google válido.');
+      return;
+    }
+    const cleanName = inviteName.trim();
+    if (cleanName.length > FIELD_LIMITS.CUSTOMER_NAME) {
+      setErrorMsg(`O nome do colaborador deve ter no máximo ${FIELD_LIMITS.CUSTOMER_NAME} caracteres.`);
+      return;
+    }
+    if (!Object.values(invitePerms).some(Boolean)) {
+      setErrorMsg('Selecione pelo menos uma permissão de acesso para o colaborador.');
       return;
     }
     if (
@@ -202,7 +211,7 @@ export function UserManagementTab({
         depot,
         actorEmail: normalizedSelfEmail,
         email: candidate,
-        displayName: inviteName,
+        displayName: cleanName,
         role: inviteRole,
         permissions: invitePerms,
         existingMembers: members,
@@ -249,6 +258,17 @@ export function UserManagementTab({
     if (!depot || !canManageUsers || !editingEmail) return;
     setErrorMsg(null);
     setNotice(null);
+
+    const cleanName = editName.trim();
+    if (cleanName.length > FIELD_LIMITS.CUSTOMER_NAME) {
+      setErrorMsg(`O nome do colaborador deve ter no máximo ${FIELD_LIMITS.CUSTOMER_NAME} caracteres.`);
+      return;
+    }
+    if (!Object.values(editPerms).some(Boolean)) {
+      setErrorMsg('Selecione pelo menos uma permissão de acesso para o colaborador.');
+      return;
+    }
+
     setSaving(true);
     try {
       await inviteOrUpdateDepotMember({
@@ -256,7 +276,7 @@ export function UserManagementTab({
         depot,
         actorEmail: normalizedSelfEmail,
         email: editingEmail,
-        displayName: editName,
+        displayName: cleanName,
         role: editRole,
         permissions: editPerms,
         existingMembers: members,
@@ -333,7 +353,7 @@ export function UserManagementTab({
           </span>
         </div>
 
-        {availableDepots.length > 1 && (
+        {isDepotOwner && canManageUsers && availableDepots.length > 1 && (
           <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg p-3.5 space-y-1.5">
             <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
               Distribuidora Ativa nesta Sessão
@@ -414,6 +434,7 @@ export function UserManagementTab({
       {/* Invite New Collaborator Form (Admins only) */}
       {canManageUsers && (
         <form
+          noValidate
           onSubmit={handleInviteSubmit}
           className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5"
         >
