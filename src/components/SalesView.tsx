@@ -1,7 +1,7 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Check, Eye, FileText, List, Map as MapIcon, Printer, Search, Trash2, TrendingUp, Truck, X, XCircle } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { formatCurrency, formatDateTime, getRecordDate, getRecordMillis, getRecordTimestamp } from '../lib/formatters';
 import { deleteSaleRecord, markSalePaid, updateSaleDelivery } from '../services/depotService';
 import {
@@ -64,6 +64,8 @@ export function SalesView({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<Sale | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Sale | null>(null);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
 
   const dateBounds = useMemo(() => {
@@ -394,8 +396,10 @@ export function SalesView({
     interface DailyProfitGroup {
       dateKey: string;
       profitByCode: Record<string, number>;
+      discountByCode: Record<string, number>;
       unitsByCode: Record<string, number>;
       dailyTotalProfit: number;
+      dailyTotalDiscount: number;
     }
 
     const dailyMap = new Map<string, DailyProfitGroup>();
@@ -405,8 +409,10 @@ export function SalesView({
         existing = {
           dateKey,
           profitByCode: {},
+          discountByCode: {},
           unitsByCode: {},
           dailyTotalProfit: 0,
+          dailyTotalDiscount: 0,
         };
         dailyMap.set(dateKey, existing);
       }
@@ -414,21 +420,29 @@ export function SalesView({
     };
 
     const totalProfitByCode: Record<string, number> = {};
+    const totalDiscountByCode: Record<string, number> = {};
     for (const code of cylinderCodes) {
       totalProfitByCode[code] = 0;
+      totalDiscountByCode[code] = 0;
     }
 
+    let totalPeriodDiscount = 0;
     for (const s of activeSales) {
       const dateKey = toInputDate(getRecordDate(s));
       const day = ensureDay(dateKey);
       const code = s.cylinderCode.trim().toUpperCase();
       const profit = getSaleProfit(s);
+      const discount = Math.max(0, s.discount || 0);
 
       day.profitByCode[code] = (day.profitByCode[code] ?? 0) + profit;
+      day.discountByCode[code] = (day.discountByCode[code] ?? 0) + discount;
       day.unitsByCode[code] = (day.unitsByCode[code] ?? 0) + s.quantity;
       day.dailyTotalProfit += profit;
+      day.dailyTotalDiscount += discount;
 
       totalProfitByCode[code] = (totalProfitByCode[code] ?? 0) + profit;
+      totalDiscountByCode[code] = (totalDiscountByCode[code] ?? 0) + discount;
+      totalPeriodDiscount += discount;
     }
 
     if (activeSales.length === 0 && includeExpenses) {
@@ -444,8 +458,9 @@ export function SalesView({
     );
     if (sortedDays.length === 0) return;
 
+    const useLandscape = cylinderCodes.length >= 3;
     const doc = new jsPDF({
-      orientation: cylinderCodes.length > 4 ? 'landscape' : 'portrait',
+      orientation: useLandscape ? 'landscape' : 'portrait',
       unit: 'mm',
       format: 'a4',
     });
@@ -493,6 +508,7 @@ export function SalesView({
       `Pedidos: ${filteredSummary.activeCount}`,
       `Botijões: ${filteredSummary.totalUnits}`,
       `Bruto: ${formatCurrency(filteredSummary.totalValue, currency)}`,
+      `Descontos: ${formatCurrency(totalPeriodDiscount, currency)}`,
     ].join('   •   ');
     doc.text(summaryLine1, margin, 31);
 
@@ -522,37 +538,52 @@ export function SalesView({
     };
 
     const headRow = [
-      ['Data', ...cylinderCodes.map((code) => `Lucro de ${code}`), 'Total diário'],
+      [
+        'Data',
+        ...cylinderCodes.flatMap((code) => [`Lucro ${code}`, `Desc. ${code}`]),
+        'Total Desc.',
+        'Total diário',
+      ],
     ];
 
     const bodyRows = sortedDays.map((day) => [
       formatDateWithDay(day.dateKey),
-      ...cylinderCodes.map((code) =>
-        (day.unitsByCode[code] ?? 0) > 0
-          ? formatCurrency(day.profitByCode[code] ?? 0, currency)
-          : '—'
-      ),
+      ...cylinderCodes.flatMap((code) => {
+        const hasUnits = (day.unitsByCode[code] ?? 0) > 0;
+        return [
+          hasUnits ? formatCurrency(day.profitByCode[code] ?? 0, currency) : '—',
+          hasUnits ? formatCurrency(day.discountByCode[code] ?? 0, currency) : '—',
+        ];
+      }),
+      formatCurrency(day.dailyTotalDiscount, currency),
       formatCurrency(day.dailyTotalProfit, currency),
     ]);
 
     const footRow = [
       [
         `Total (${sortedDays.length} dias)`,
-        ...cylinderCodes.map((code) => formatCurrency(totalProfitByCode[code] ?? 0, currency)),
+        ...cylinderCodes.flatMap((code) => [
+          formatCurrency(totalProfitByCode[code] ?? 0, currency),
+          formatCurrency(totalDiscountByCode[code] ?? 0, currency),
+        ]),
+        formatCurrency(totalPeriodDiscount, currency),
         formatCurrency(filteredSummary.cylindersProfit, currency),
       ],
     ];
 
+    const totalDataCols = cylinderCodes.length * 2;
     const dynamicColumnStyles: Record<
       number,
       { halign?: 'left' | 'right' | 'center'; cellWidth?: number; fontStyle?: 'bold' | 'normal' }
     > = {
-      0: { cellWidth: 34, halign: 'left' },
+      0: { cellWidth: 32, halign: 'left' },
     };
-    cylinderCodes.forEach((_, idx) => {
-      dynamicColumnStyles[idx + 1] = { halign: 'right' };
-    });
-    dynamicColumnStyles[cylinderCodes.length + 1] = { halign: 'right', fontStyle: 'bold' };
+    for (let i = 1; i <= totalDataCols + 1; i++) {
+      dynamicColumnStyles[i] = { halign: 'right' };
+    }
+    dynamicColumnStyles[totalDataCols + 2] = { halign: 'right', fontStyle: 'bold' };
+
+    const tableFontSize = cylinderCodes.length >= 5 ? 7.2 : cylinderCodes.length >= 3 ? 7.8 : 8.4;
 
     autoTable(doc, {
       startY: 41,
@@ -564,8 +595,8 @@ export function SalesView({
       theme: 'striped',
       styles: {
         font: 'helvetica',
-        fontSize: cylinderCodes.length > 4 ? 8 : 8.8,
-        cellPadding: 2.6,
+        fontSize: tableFontSize,
+        cellPadding: cylinderCodes.length >= 5 ? 2 : 2.4,
         textColor: [30, 41, 59],
         valign: 'middle',
       },
@@ -573,13 +604,13 @@ export function SalesView({
         fillColor: [15, 23, 42],
         textColor: [255, 255, 255],
         fontStyle: 'bold',
-        fontSize: cylinderCodes.length > 4 ? 8 : 8.8,
+        fontSize: tableFontSize,
       },
       footStyles: {
         fillColor: [241, 245, 249],
         textColor: [15, 23, 42],
         fontStyle: 'bold',
-        fontSize: cylinderCodes.length > 4 ? 8.2 : 9,
+        fontSize: tableFontSize + 0.2,
       },
       alternateRowStyles: {
         fillColor: [248, 250, 252],
@@ -1141,6 +1172,8 @@ export function SalesView({
                   onClick={() => {
                     const target = selectedSale;
                     setSelectedSale(null);
+                    setDeleteConfirmInput('');
+                    setDeleteError(null);
                     setDeleteTarget(target);
                   }}
                   className="w-full py-2.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50/60 dark:bg-red-950/30 text-sm font-medium text-red-700 dark:text-red-400 hover:bg-red-100/70 dark:hover:bg-red-950/60 inline-flex items-center justify-center gap-2 cursor-pointer"
@@ -1202,43 +1235,131 @@ export function SalesView({
         </div>
       )}
       {/* Delete Confirmation Modal */}
-      {deleteTarget && (
-        <div className="fixed inset-0 z-50 bg-slate-950/40 dark:bg-slate-950/70 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl w-full max-w-md p-6 space-y-4">
-            <h3 className="font-display text-lg font-semibold text-slate-900 dark:text-slate-100">
-              Excluir Registro {deleteTarget.orderNumber}?
-            </h3>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              Esta ação remove apenas o registro da venda ({deleteTarget.quantity}x {deleteTarget.cylinderCode}) sem alterar o estoque atual do pátio.
-            </p>
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setDeleteTarget(null)}
-                className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
-              >
-                Voltar
-              </button>
-              <button
-                type="button"
-                disabled={busyId === deleteTarget.id}
-                onClick={async () => {
-                  setBusyId(deleteTarget.id);
-                  try {
-                    await deleteSaleRecord(uid, deleteTarget.id);
+      {deleteTarget && (() => {
+        const expectedOrderId = deleteTarget.orderNumber.trim();
+        const isDeleteIdMatch =
+          expectedOrderId.length > 0 &&
+          deleteConfirmInput.trim().toUpperCase() === expectedOrderId.toUpperCase();
+
+        const handleConfirmDelete = async (e: FormEvent) => {
+          e.preventDefault();
+          setDeleteError(null);
+          if (!isDeleteIdMatch) {
+            setDeleteError(`Digite corretamente o ID do pedido (${expectedOrderId}) para confirmar.`);
+            return;
+          }
+          setBusyId(deleteTarget.id);
+          try {
+            await deleteSaleRecord(uid, deleteTarget.id);
+            setDeleteTarget(null);
+            setDeleteConfirmInput('');
+          } catch (err) {
+            setDeleteError(
+              err instanceof Error ? err.message : 'Não foi possível excluir o registro do pedido.'
+            );
+          } finally {
+            setBusyId(null);
+          }
+        };
+
+        return (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Confirmar exclusão do pedido ${deleteTarget.orderNumber}`}
+            className="fixed inset-0 z-50 bg-slate-950/40 dark:bg-slate-950/70 flex items-center justify-center p-4"
+          >
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl w-full max-w-md p-6 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <h3 className="font-display text-lg font-semibold text-slate-900 dark:text-slate-100">
+                  Excluir Registro {deleteTarget.orderNumber}?
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => {
                     setDeleteTarget(null);
-                  } finally {
-                    setBusyId(null);
-                  }
-                }}
-                className="px-4 py-2 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 cursor-pointer"
-              >
-                {busyId === deleteTarget.id ? 'Excluindo...' : 'Excluir Registro'}
-              </button>
+                    setDeleteConfirmInput('');
+                    setDeleteError(null);
+                  }}
+                  className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-md cursor-pointer shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                Esta ação remove apenas o registro da venda ({deleteTarget.quantity}x {deleteTarget.cylinderCode}) sem alterar o estoque atual do pátio e não poderá ser desfeita.
+              </p>
+
+              {deleteError && (
+                <div
+                  role="alert"
+                  className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-lg px-3 py-2 text-xs text-red-800 dark:text-red-300 font-medium"
+                >
+                  {deleteError}
+                </div>
+              )}
+
+              <form onSubmit={handleConfirmDelete} noValidate className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="delete-order-confirm-input"
+                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
+                  >
+                    Para confirmar, digite o ID do pedido{' '}
+                    <strong className="font-mono text-slate-900 dark:text-slate-100 select-all">
+                      {expectedOrderId}
+                    </strong>
+                  </label>
+                  <input
+                    id="delete-order-confirm-input"
+                    type="text"
+                    autoFocus
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={deleteConfirmInput}
+                    onChange={(e) => {
+                      setDeleteConfirmInput(e.target.value);
+                      setDeleteError(null);
+                    }}
+                    placeholder={`Digite ${expectedOrderId}`}
+                    className={`w-full h-10 px-3 rounded-lg border bg-white dark:bg-slate-950 font-mono text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none ${
+                      isDeleteIdMatch
+                        ? 'border-emerald-500 dark:border-emerald-500 focus:border-emerald-600'
+                        : 'border-slate-200 dark:border-slate-700 focus:border-red-600'
+                    }`}
+                  />
+                  {deleteConfirmInput.trim().length > 0 && !isDeleteIdMatch && (
+                    <p className="text-[11px] text-red-600 dark:text-red-400 mt-1">
+                      O ID digitado não corresponde a <span className="font-mono">{expectedOrderId}</span>.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteTarget(null);
+                      setDeleteConfirmInput('');
+                      setDeleteError(null);
+                    }}
+                    className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    Voltar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={busyId === deleteTarget.id || !isDeleteIdMatch}
+                    className="px-4 py-2 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {busyId === deleteTarget.id ? 'Excluindo...' : 'Excluir Registro'}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
