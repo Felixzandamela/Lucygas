@@ -5,7 +5,6 @@ import {
   GripVertical,
   History,
   Plus,
-  RotateCcw,
   Save,
   Trash2,
   X,
@@ -24,7 +23,6 @@ import {
   type HistoricalEventKind,
   type HistoricalInitialStockInput,
   type HistoricalLedgerEventInput,
-  saveInitialStockToFirestore,
   saveSingleHistoricalEvent,
 } from '../services/depotService';
 import type { CurrencyCode, Cylinder, Expense, Sale, StockMovement } from '../types/gas';
@@ -126,10 +124,8 @@ export function getHistoricalDraftKey(uid: string): string {
 interface HistoricalDraftPayload {
   startDate: string;
   endDate: string;
-  initialStocks: HistoricalInitialStockInput[];
   events: HistoricalLedgerEventInput[];
   discardScope: DiscardScope;
-  initialSaved?: boolean;
   savedAt: number;
 }
 
@@ -139,7 +135,7 @@ function loadDraftFromStorage(uid: string): HistoricalDraftPayload | null {
     const raw = window.localStorage.getItem(getHistoricalDraftKey(uid));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<HistoricalDraftPayload>;
-    if (!Array.isArray(parsed.initialStocks) || !Array.isArray(parsed.events)) return null;
+    if (!Array.isArray(parsed.events)) return null;
     const defaults = getDefaultDateRange();
     const validScope: DiscardScope =
       parsed.discardScope === 'all_ledger' ||
@@ -150,10 +146,8 @@ function loadDraftFromStorage(uid: string): HistoricalDraftPayload | null {
     return {
       startDate: typeof parsed.startDate === 'string' && parsed.startDate ? parsed.startDate : defaults.startDate,
       endDate: typeof parsed.endDate === 'string' && parsed.endDate ? parsed.endDate : defaults.endDate,
-      initialStocks: parsed.initialStocks,
       events: parsed.events,
       discardScope: validScope,
-      initialSaved: Boolean(parsed.initialSaved),
       savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
     };
   } catch {
@@ -182,19 +176,13 @@ export function HistoricalLedgerModal({
   const [endDate, setEndDate] = useState<string>(
     () => initialDraft?.endDate ?? defaultRange.endDate
   );
-  const [initialStocks, setInitialStocks] = useState<HistoricalInitialStockInput[]>(() =>
-    initialDraft
-      ? initialDraft.initialStocks.map((s) => ({ ...s }))
-      : buildInitialStocksFromCylinders(cylinders)
-  );
+  const baseStocks = useMemo(() => buildInitialStocksFromCylinders(cylinders), [cylinders]);
   const [events, setEvents] = useState<HistoricalLedgerEventInput[]>(() =>
     initialDraft ? initialDraft.events.map((e) => ({ ...e })) : []
   );
   const [discardScope, setDiscardScope] = useState<DiscardScope>(
     () => initialDraft?.discardScope ?? 'selected_period'
   );
-  const [initialSaved, setInitialSaved] = useState<boolean>(() => Boolean(initialDraft?.initialSaved));
-  const [savingInitial, setSavingInitial] = useState(false);
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -269,24 +257,22 @@ export function HistoricalLedgerModal({
     if (typeof window === 'undefined') return;
     try {
       const key = getHistoricalDraftKey(uid);
-      if (events.length === 0 && !initialSaved) {
+      if (events.length === 0) {
         window.localStorage.removeItem(key);
         return;
       }
       const payload: HistoricalDraftPayload = {
         startDate,
         endDate,
-        initialStocks,
         events,
         discardScope,
-        initialSaved,
         savedAt: Date.now(),
       };
       window.localStorage.setItem(key, JSON.stringify(payload));
     } catch {
       // Ignore storage quota issues
     }
-  }, [uid, startDate, endDate, initialStocks, events, discardScope, initialSaved]);
+  }, [uid, startDate, endDate, events, discardScope]);
 
   const periodItems = useMemo(() => {
     const startMs = new Date(`${startDate}T00:00:00`).getTime();
@@ -318,7 +304,7 @@ export function HistoricalLedgerModal({
 
   const simulation = useMemo(() => {
     const state: Record<string, { full: number; empty: number }> = {};
-    for (const init of initialStocks) {
+    for (const init of baseStocks) {
       state[init.code] = {
         full: Math.max(0, Math.floor(init.fullCount)),
         empty: Math.max(0, Math.floor(init.emptyCount)),
@@ -376,12 +362,11 @@ export function HistoricalLedgerModal({
       totalUnitsSold,
       hasNegativeWarning,
     };
-  }, [initialStocks, events, cylinderByCode]);
+  }, [baseStocks, events, cylinderByCode]);
 
   const handleStartDateChange = (nextStart: string) => {
     if (!nextStart) return;
     setStartDate(nextStart);
-    setInitialSaved(false);
     if (nextStart > endDate) {
       setEndDate(nextStart);
     }
@@ -392,7 +377,6 @@ export function HistoricalLedgerModal({
     setEndDate(nextEnd);
     if (nextEnd < startDate) {
       setStartDate(nextEnd);
-      setInitialSaved(false);
     }
   };
 
@@ -446,14 +430,6 @@ export function HistoricalLedgerModal({
     );
   };
 
-  const handleUpdateInitial = (code: string, field: 'fullCount' | 'emptyCount', val: number) => {
-    const safe = Number.isFinite(val) ? Math.min(100000, Math.max(0, Math.floor(val))) : 0;
-    setInitialSaved(false);
-    setInitialStocks((prev) =>
-      prev.map((item) => (item.code === code ? { ...item, [field]: safe } : item))
-    );
-  };
-
   const handleUpdateEvent = (id: string, patch: Partial<HistoricalLedgerEventInput>) => {
     setEvents((prev) =>
       prev.map((item) =>
@@ -466,31 +442,6 @@ export function HistoricalLedgerModal({
           : item
       )
     );
-  };
-
-  const validateInitialStockList = (): string | null => {
-    if (!isValidPastOrTodayIsoDate(startDate)) {
-      return 'Informe uma Data Inicial válida que não esteja no futuro.';
-    }
-    for (const item of initialStocks) {
-      if (
-        !Number.isFinite(item.fullCount) ||
-        !Number.isInteger(item.fullCount) ||
-        item.fullCount < 0 ||
-        item.fullCount > 100000
-      ) {
-        return `${item.code}: cheios iniciais deve ser um número inteiro entre 0 e 100.000.`;
-      }
-      if (
-        !Number.isFinite(item.emptyCount) ||
-        !Number.isInteger(item.emptyCount) ||
-        item.emptyCount < 0 ||
-        item.emptyCount > 100000
-      ) {
-        return `${item.code}: vazios iniciais deve ser um número inteiro entre 0 e 100.000.`;
-      }
-    }
-    return null;
   };
 
   const validateEventRow = (ev: HistoricalLedgerEventInput, index: number): string | null => {
@@ -519,31 +470,6 @@ export function HistoricalLedgerModal({
       }
     }
     return null;
-  };
-
-  const handleSaveInitial = async () => {
-    setErrorMsg(null);
-    setRowNotice(null);
-    const validationErr = validateInitialStockList();
-    if (validationErr) {
-      setErrorMsg(validationErr);
-      return;
-    }
-    setSavingInitial(true);
-    try {
-      await saveInitialStockToFirestore({
-        uid,
-        existingCylinders: cylinders,
-        initialDateStr: startDate,
-        initialStocks,
-      });
-      setInitialSaved(true);
-      setRowNotice(`Stock inicial de ${formatBrDate(startDate)} salvo no banco de dados.`);
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Erro ao salvar stock inicial.');
-    } finally {
-      setSavingInitial(false);
-    }
   };
 
   const handleSaveRow = async (ev: HistoricalLedgerEventInput, index: number) => {
@@ -602,7 +528,7 @@ export function HistoricalLedgerModal({
   const handleAddEvent = () => {
     const defaultDate = events.length > 0 ? events[events.length - 1].dateStr : startDate;
     const defaultCode =
-      initialStocks[0]?.code ?? cylinders[0]?.code.toUpperCase() ?? 'P9';
+      baseStocks[0]?.code ?? cylinders[0]?.code.toUpperCase() ?? 'P9';
     setEvents((prev) => [
       ...prev,
       {
@@ -614,13 +540,6 @@ export function HistoricalLedgerModal({
         discount: 0,
       },
     ]);
-  };
-
-  const handlePullCurrentStock = () => {
-    setInitialStocks(buildInitialStocksFromCylinders(cylinders));
-    setInitialSaved(false);
-    setErrorMsg(null);
-    setRowNotice('Stock inicial atualizado com os saldos atuais dos botijões.');
   };
 
   const handleClearTable = () => {
@@ -639,11 +558,6 @@ export function HistoricalLedgerModal({
     }
     if (startDate > endDate) {
       setErrorMsg('A data inicial não pode ser posterior à data final.');
-      return;
-    }
-    const initErr = validateInitialStockList();
-    if (initErr) {
-      setErrorMsg(initErr);
       return;
     }
     for (let i = 0; i < events.length; i++) {
@@ -679,7 +593,8 @@ export function HistoricalLedgerModal({
         movementsToDelete,
         expensesToDelete,
         initialDateStr: startDate,
-        initialStocks,
+        initialStocks: baseStocks,
+        recordInitialMovements: false,
         events,
       });
 
@@ -707,7 +622,7 @@ export function HistoricalLedgerModal({
   const availableCodes = Array.from(
     new Set([
       ...cylinders.map((c) => c.code.trim().toUpperCase()),
-      ...initialStocks.map((s) => s.code.trim().toUpperCase()),
+      ...baseStocks.map((s) => s.code.trim().toUpperCase()),
       ...events.map((e) => e.cylinderCode.trim().toUpperCase()),
     ])
   ).filter(Boolean);
@@ -895,113 +810,12 @@ export function HistoricalLedgerModal({
             </div>
           </div>
 
-          {/* 3. Initial Stock at startDate */}
-          <div className="space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                3. Stock Inicial em {formatBrDate(startDate)}
-              </p>
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handlePullCurrentStock}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Puxar estoque atual</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={savingInitial}
-                  onClick={handleSaveInitial}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer ${
-                    initialSaved
-                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900/60'
-                      : 'bg-slate-900 dark:bg-slate-800 text-white hover:bg-slate-800 dark:hover:bg-slate-700'
-                  } disabled:opacity-50`}
-                >
-                  {initialSaved ? (
-                    <>
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>Inicial Salvo</span>
-                    </>
-                  ) : (
-                    <>
-                      <Save className="w-3.5 h-3.5" />
-                      <span>{savingInitial ? 'Salvando...' : 'Salvar Stock Inicial'}</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {initialStocks.map((item) => (
-                <div
-                  key={item.code}
-                  className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 space-y-2"
-                >
-                  <p className="font-display text-sm font-bold text-slate-900 dark:text-slate-100">
-                    {item.code}
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-0.5">
-                        Cheios
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={100000}
-                        step={1}
-                        value={item.fullCount}
-                        onFocus={(e) => e.currentTarget.select()}
-                        onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
-                        onChange={(e) => {
-                          const clean = sanitizeNumericText(e.target.value, false);
-                          handleUpdateInitial(
-                            item.code,
-                            'fullCount',
-                            clean === '' ? 0 : Number(clean)
-                          );
-                        }}
-                        className="w-full h-8 px-2 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs text-slate-900 dark:text-slate-100"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] text-slate-500 dark:text-slate-400 mb-0.5">
-                        Vazios
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={100000}
-                        step={1}
-                        value={item.emptyCount}
-                        onFocus={(e) => e.currentTarget.select()}
-                        onKeyDown={(e) => preventNegativeNumberKeys(e, false)}
-                        onChange={(e) => {
-                          const clean = sanitizeNumericText(e.target.value, false);
-                          handleUpdateInitial(
-                            item.code,
-                            'emptyCount',
-                            clean === '' ? 0 : Number(clean)
-                          );
-                        }}
-                        className="w-full h-8 px-2 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-mono text-xs text-slate-900 dark:text-slate-100"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* 4. Drag-and-Drop Chronological Events Table */}
+          {/* 3. Drag-and-Drop Chronological Events Table */}
           <div className="space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                  4. Movimentações e Vendas ({formatBrDate(startDate)} a {formatBrDate(endDate)}) — {events.length} lançamentos
+                  3. Movimentações e Vendas ({formatBrDate(startDate)} a {formatBrDate(endDate)}) — {events.length} lançamentos
                 </p>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                   Arraste pelo ícone lateral (⋮⋮) para reordenar as linhas — o saldo após cada movimento recalcula na hora.

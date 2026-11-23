@@ -458,7 +458,7 @@ export function SalesView({
     );
     if (sortedDays.length === 0) return;
 
-    const useLandscape = cylinderCodes.length >= 3;
+    const useLandscape = cylinderCodes.length >= 4;
     const doc = new jsPDF({
       orientation: useLandscape ? 'landscape' : 'portrait',
       unit: 'mm',
@@ -529,6 +529,14 @@ export function SalesView({
     doc.text(summaryLine2, margin, 36.5);
     doc.setTextColor(15, 23, 42);
 
+    if (totalPeriodDiscount > 0) {
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(7.8);
+      doc.setTextColor(146, 64, 14);
+      doc.text('* Destaque e (*) indicam botija com desconto aplicado na data.', margin, 41.5);
+      doc.setTextColor(15, 23, 42);
+    }
+
     const weekdayShort = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
     const formatDateWithDay = (iso: string) => {
       const [y, m, d] = iso.split('-').map(Number);
@@ -540,7 +548,7 @@ export function SalesView({
     const headRow = [
       [
         'Data',
-        ...cylinderCodes.flatMap((code) => [`Lucro ${code}`, `Desc. ${code}`]),
+        ...cylinderCodes.map((code) => `Lucro ${code}`),
         'Total Desc.',
         'Total diário',
       ],
@@ -548,45 +556,48 @@ export function SalesView({
 
     const bodyRows = sortedDays.map((day) => [
       formatDateWithDay(day.dateKey),
-      ...cylinderCodes.flatMap((code) => {
+      ...cylinderCodes.map((code) => {
         const hasUnits = (day.unitsByCode[code] ?? 0) > 0;
-        return [
-          hasUnits ? formatCurrency(day.profitByCode[code] ?? 0, currency) : '—',
-          hasUnits ? formatCurrency(day.discountByCode[code] ?? 0, currency) : '—',
-        ];
+        if (!hasUnits) return '—';
+        const profitStr = formatCurrency(day.profitByCode[code] ?? 0, currency);
+        const hasDiscount = (day.discountByCode[code] ?? 0) > 0;
+        return hasDiscount ? `${profitStr} *` : profitStr;
       }),
-      formatCurrency(day.dailyTotalDiscount, currency),
+      day.dailyTotalDiscount > 0 ? formatCurrency(day.dailyTotalDiscount, currency) : '—',
       formatCurrency(day.dailyTotalProfit, currency),
     ]);
 
     const footRow = [
       [
         `Total (${sortedDays.length} dias)`,
-        ...cylinderCodes.flatMap((code) => [
-          formatCurrency(totalProfitByCode[code] ?? 0, currency),
-          formatCurrency(totalDiscountByCode[code] ?? 0, currency),
-        ]),
+        ...cylinderCodes.map((code) => {
+          const totalStr = formatCurrency(totalProfitByCode[code] ?? 0, currency);
+          return (totalDiscountByCode[code] ?? 0) > 0 ? `${totalStr} *` : totalStr;
+        }),
         formatCurrency(totalPeriodDiscount, currency),
         formatCurrency(filteredSummary.cylindersProfit, currency),
       ],
     ];
 
-    const totalDataCols = cylinderCodes.length * 2;
+    const totalCylinderCols = cylinderCodes.length;
+    const totalDiscountColIdx = totalCylinderCols + 1;
+    const totalDailyColIdx = totalCylinderCols + 2;
+
     const dynamicColumnStyles: Record<
       number,
       { halign?: 'left' | 'right' | 'center'; cellWidth?: number; fontStyle?: 'bold' | 'normal' }
     > = {
       0: { cellWidth: 32, halign: 'left' },
     };
-    for (let i = 1; i <= totalDataCols + 1; i++) {
+    for (let i = 1; i <= totalDiscountColIdx; i++) {
       dynamicColumnStyles[i] = { halign: 'right' };
     }
-    dynamicColumnStyles[totalDataCols + 2] = { halign: 'right', fontStyle: 'bold' };
+    dynamicColumnStyles[totalDailyColIdx] = { halign: 'right', fontStyle: 'bold' };
 
-    const tableFontSize = cylinderCodes.length >= 5 ? 7.2 : cylinderCodes.length >= 3 ? 7.8 : 8.4;
+    const tableFontSize = cylinderCodes.length >= 6 ? 7.5 : cylinderCodes.length >= 4 ? 8 : 8.5;
 
     autoTable(doc, {
-      startY: 41,
+      startY: totalPeriodDiscount > 0 ? 45 : 41,
       margin: { left: margin, right: margin, bottom: 16 },
       head: headRow,
       body: bodyRows,
@@ -596,7 +607,7 @@ export function SalesView({
       styles: {
         font: 'helvetica',
         fontSize: tableFontSize,
-        cellPadding: cylinderCodes.length >= 5 ? 2 : 2.4,
+        cellPadding: cylinderCodes.length >= 5 ? 2.1 : 2.5,
         textColor: [30, 41, 59],
         valign: 'middle',
       },
@@ -619,6 +630,30 @@ export function SalesView({
       didParseCell: (data) => {
         if (data.section === 'head' || data.section === 'foot') {
           data.cell.styles.halign = data.column.index === 0 ? 'left' : 'right';
+        }
+        if (data.section === 'body') {
+          const day = sortedDays[data.row.index];
+          if (!day) return;
+          if (data.column.index >= 1 && data.column.index <= totalCylinderCols) {
+            const code = cylinderCodes[data.column.index - 1];
+            if ((day.discountByCode[code] ?? 0) > 0) {
+              data.cell.styles.fillColor = [254, 243, 199];
+              data.cell.styles.textColor = [146, 64, 14];
+              data.cell.styles.fontStyle = 'bold';
+            }
+          } else if (data.column.index === totalDiscountColIdx && day.dailyTotalDiscount > 0) {
+            data.cell.styles.textColor = [180, 83, 9];
+            data.cell.styles.fontStyle = 'bold';
+          }
+        } else if (data.section === 'foot') {
+          if (data.column.index >= 1 && data.column.index <= totalCylinderCols) {
+            const code = cylinderCodes[data.column.index - 1];
+            if ((totalDiscountByCode[code] ?? 0) > 0) {
+              data.cell.styles.textColor = [146, 64, 14];
+            }
+          } else if (data.column.index === totalDiscountColIdx && totalPeriodDiscount > 0) {
+            data.cell.styles.textColor = [180, 83, 9];
+          }
         }
       },
     });

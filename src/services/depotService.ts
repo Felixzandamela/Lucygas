@@ -1622,6 +1622,7 @@ export async function applyHistoricalLedgerRebuild(input: {
   expensesToDelete?: Expense[];
   initialDateStr: string;
   initialStocks: HistoricalInitialStockInput[];
+  recordInitialMovements?: boolean;
   events: HistoricalLedgerEventInput[];
 }): Promise<{ finalStockByCode: Record<string, { full: number; empty: number }> }> {
   const {
@@ -1632,6 +1633,7 @@ export async function applyHistoricalLedgerRebuild(input: {
     expensesToDelete = [],
     initialDateStr,
     initialStocks,
+    recordInitialMovements = false,
     events,
   } = input;
 
@@ -1720,27 +1722,29 @@ export async function applyHistoricalLedgerRebuild(input: {
     ops.push((b) => b.delete(doc(db, 'depots', uid, 'expenses', e.id)));
   }
 
-  // Record initial stock adjustment movements on initialDateStr
-  const initBaseDate = new Date(`${initialDateStr}T08:00:00`);
-  for (const init of initialStocks) {
-    const code = init.code.trim().toUpperCase();
-    const cyl = cylinderByCode.get(code);
-    if (!cyl) continue;
-    const initTs = toSafeOccurredAtTimestamp(initBaseDate) ?? Timestamp.now();
-    const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
-    ops.push((b) =>
-      b.set(movRef, {
-        ...buildAccessFields(uid),
-        cylinderId: cyl.id,
-        cylinderCode: cyl.code,
-        movementType: 'adjustment' as MovementType,
-        fullDelta: Math.max(0, Math.floor(init.fullCount)),
-        emptyDelta: Math.max(0, Math.floor(init.emptyCount)),
-        note: sanitizeText(`Stock inicial (${initialDateStr})`, FIELD_LIMITS.MOVEMENT_NOTE),
-        occurredAt: initTs,
-        createdAt: serverTimestamp(),
-      })
-    );
+  // Optionally record initial stock adjustment movements on initialDateStr
+  if (recordInitialMovements) {
+    const initBaseDate = new Date(`${initialDateStr}T08:00:00`);
+    for (const init of initialStocks) {
+      const code = init.code.trim().toUpperCase();
+      const cyl = cylinderByCode.get(code);
+      if (!cyl) continue;
+      const initTs = toSafeOccurredAtTimestamp(initBaseDate) ?? Timestamp.now();
+      const movRef = doc(collection(db, 'depots', uid, 'stockMovements'));
+      ops.push((b) =>
+        b.set(movRef, {
+          ...buildAccessFields(uid),
+          cylinderId: cyl.id,
+          cylinderCode: cyl.code,
+          movementType: 'adjustment' as MovementType,
+          fullDelta: Math.max(0, Math.floor(init.fullCount)),
+          emptyDelta: Math.max(0, Math.floor(init.emptyCount)),
+          note: sanitizeText(`Stock inicial (${initialDateStr})`, FIELD_LIMITS.MOVEMENT_NOTE),
+          occurredAt: initTs,
+          createdAt: serverTimestamp(),
+        })
+      );
+    }
   }
 
   // Group sequence within each day so timestamps maintain exact intra-day order
