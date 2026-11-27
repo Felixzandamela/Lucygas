@@ -418,7 +418,7 @@ export function FinanceView({ uid, currency, sales, expenses, permissions }: Fin
                 Despesas Lançadas
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Combustível, manutenção de frota, entregas e custos fixos
+                Combustível, manutenção de frota, taxas, entregas e custos fixos
               </p>
             </div>
           </div>
@@ -451,7 +451,7 @@ export function FinanceView({ uid, currency, sales, expenses, permissions }: Fin
                         {formatDateTime(getRecordTimestamp(exp))}
                       </td>
                       <td className="py-2.5 px-4 text-xs font-medium text-slate-700 dark:text-slate-300">
-                        {EXPENSE_CATEGORY_LABELS[exp.category]}
+                        {EXPENSE_CATEGORY_LABELS[exp.category] ?? exp.category}
                       </td>
                       <td className="py-2.5 px-4 text-slate-900 dark:text-slate-100">
                         {exp.description}

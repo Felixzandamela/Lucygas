@@ -359,7 +359,7 @@
         },
         "category": {
           "type": "string",
-          "enum": ["restock", "fuel", "maintenance", "payroll", "other"]
+          "enum": ["restock", "fuel", "maintenance", "payroll", "transfer_fees", "other"]
         },
         "description": {
           "type": "string",

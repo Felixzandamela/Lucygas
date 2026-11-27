@@ -8,7 +8,7 @@ export type SelectablePaymentMethod = 'mpesa' | 'emola' | 'cash' | 'card' | 'cre
 export type PaymentStatus = 'paid' | 'pending';
 export type DeliveryStatus = 'pending' | 'in_route' | 'delivered' | 'cancelled';
 export type MovementType = 'restock' | 'sale' | 'return_empty' | 'adjustment' | 'cancel_restore';
-export type ExpenseCategory = 'restock' | 'fuel' | 'maintenance' | 'payroll' | 'other';
+export type ExpenseCategory = 'restock' | 'fuel' | 'maintenance' | 'payroll' | 'transfer_fees' | 'other';
 
 export type MemberRole = 'admin' | 'manager' | 'seller' | 'driver' | 'inventory' | 'custom';
 export type MemberStatus = 'invited' | 'active';
@@ -199,6 +199,7 @@ export const EXPENSE_CATEGORY_LABELS: Record<ExpenseCategory, string> = {
   fuel: 'Combustível e Frota',
   maintenance: 'Manutenção',
   payroll: 'Equipe e Entregadores',
+  transfer_fees: 'Taxas de Transferência e Levantamentos',
   other: 'Outras Despesas',
 };
 

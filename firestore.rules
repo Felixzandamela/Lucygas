@@ -267,7 +267,7 @@ service cloud.firestore {
         && data.keys().hasOnly(['ownerId', 'memberEmails', 'category', 'description', 'amount', 'createdAt', 'occurredAt'])
         && data.ownerId is string && isValidId(data.ownerId)
         && (!('memberEmails' in data) || isValidMemberEmails(data.memberEmails))
-        && data.category in ['restock', 'fuel', 'maintenance', 'payroll', 'other']
+        && data.category in ['restock', 'fuel', 'maintenance', 'payroll', 'transfer_fees', 'other']
         && data.description is string && data.description.size() >= 1 && data.description.size() <= 120
         && data.amount is number && data.amount > 0 && data.amount <= 100000000
         && data.createdAt is timestamp
